@@ -53,8 +53,8 @@ class ExoticaZUserData(_PluginBase):
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar / 个人页 / 做种列表。"
     plugin_version = "1.3.5"
-    plugin_icon = "https://exoticaz.to/favicon.ico"
-    plugin_author = "HaoLekk"
+    plugin_icon = "exoticazuserdata.png"
+    plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
     plugin_order = 20
     auth_level = 1

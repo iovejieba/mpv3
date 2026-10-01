@@ -352,7 +352,7 @@ class BrushFlow(_PluginBase):
     plugin_desc = "多站点独立刷流管理；内置 ExoticaZ 等全站 H&R 站点策略层：官方公式豁免、服务器账本镜像、标定缓冲与做种窗口红区；统一收益引擎与下载健康闭环。"
     plugin_icon = "brush-flow.png"
     plugin_version = __version__
-    plugin_author = "jxxghp,InfinityPacer,Seed680"
+    plugin_author = "jxxghp,InfinityPacer,Seed680,BBin17,iovejieba"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
     plugin_order = 21

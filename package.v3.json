@@ -1,12 +1,12 @@
 {
   "BrushFlow": {
     "name": "站点刷流增强版",
-    "description": "统一收益引擎、四步配置向导、下载健康闭环与安全容量管理。",
+    "description": "多站点独立刷流管理；内置 ExoticaZ 等全站 H&R 站点策略层：官方公式豁免、服务器账本镜像、标定缓冲与做种窗口红区；统一收益引擎与下载健康闭环。",
     "labels": "刷流,仪表板,删种安全",
-    "version": "9.4.0",
+    "version": "9.4.1",
     "release": true,
-    "icon": "https://raw.githubusercontent.com/DDSRem-Dev/MoviePilot-Plugins/main/icons/brush-flow.png",
-    "author": "jxxghp,InfinityPacer,Seed680; enhanced locally",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/brush-flow.png",
+    "author": "jxxghp,InfinityPacer,Seed680,BBin17,iovejieba",
     "level": 2,
     "system_version": ">=3.0.0",
     "history": {
@@ -41,8 +41,8 @@
     "labels": "站点,用户数据,PT",
     "version": "1.3.5",
     "release": true,
-    "icon": "https://raw.githubusercontent.com/HaoLekk/MoviePilot-Plugins/main/icons/exoticazuserdata.png",
-    "author": "HaoLekk",
+    "icon": "https://raw.githubusercontent.com/iovejieba/mpv3/refs/heads/main/icons/exoticazuserdata.png",
+    "author": "iovejieba",
     "level": 1,
     "system_version": ">=3.0.0",
     "history": {
