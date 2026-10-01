@@ -1,0 +1,86 @@
+"""内嵌站点资源 overlay（由 resources.v3/custom_sites.json 生成，勿手改）。
+
+源文件更新后重发插件即可完成适配升级。
+注1: date 字段已移除（引擎不支持 date_en_elapsed_parse）。
+注2: 分类采用数字 ID（API 契约 SiteCategory.id:int），列经 media_type=movie
+统一显示"电影"。
+注3: labels = div.tags 内 tag-gray + tag-dark(排除 tag-addon 角标)——
+分辨率(2160p 4K / 1080p HD)、工作室(IENERGY)、演员(Kana MORISAWA)，
+类型标签(creampie 等)不占位。缺任一类时该段自然为空。"""
+
+OVERLAY_VERSION = "9"
+
+OVERLAY_SITES = [{'id': 'exoticaz',
+  'name': 'ExoticaZ',
+  'domain': 'https://exoticaz.to/',
+  'encoding': 'UTF-8',
+  'public': False,
+  'language': 'en',
+  'schema': 'Unit3d',
+  'search': {'paths': [{'path': 'torrents', 'method': 'get'}],
+             'params': {'search': '{keyword}', 'perPage': 50, 'sort': 'desc', 'order': 'age'}},
+  'torrents': {'list': {'selector': 'tr:has(a.torrent-link)'},
+               'fields': {'id': {'selector': 'a.torrent-link',
+                                 'attribute': 'href',
+                                 'filters': [{'name': 're_search', 'args': ['\\d+', 0]}]},
+                          'title': {'selector': 'a.torrent-link', 'attribute': 'title'},
+                          'details': {'selector': 'a.torrent-link', 'attribute': 'href'},
+                          'download': {'selector': "a[href*='/download/torrent/']",
+                                       'attribute': 'href'},
+                          'category': {'selector': 'td:nth-of-type(1) i.category-icon',
+                                       'attribute': 'title',
+                                       'optional': True},
+                          'date_elapsed': {'selector': 'td:nth-of-type(4)', 'optional': True},
+                          'size': {'selector': 'td:nth-of-type(5)'},
+                          'seeders': {'selector': 'td:nth-of-type(6)'},
+                          'leechers': {'selector': 'td:nth-of-type(7)'},
+                          'grabs': {'selector': 'td:nth-of-type(8)'},
+                          'downloadvolumefactor': {'case': {'i[title*=Free]': 0,
+                                                            'i[title*=Half]': 0.5,
+                                                            '*': 1}},
+                          'uploadvolumefactor': {'case': {'i[title*=Double]': 2, '*': 1}},
+                          'labels': {'selector': 'div.tags .tag-gray:not(.tag-addon), div.tags '
+                                                 '.tag-dark:not(.tag-addon)'}}},
+  'category': {'movie': [{'id': 1,
+                          'value': 1,
+                          'param': 'category[]',
+                          'cat': 'Video Clips',
+                          'desc': 'ExoticaZ Video Clips'},
+                         {'id': 2,
+                          'value': 2,
+                          'param': 'category[]',
+                          'cat': 'Video Pack',
+                          'desc': 'ExoticaZ Video Pack'},
+                         {'id': 3,
+                          'value': 3,
+                          'param': 'category[]',
+                          'cat': 'Siterip Pack',
+                          'desc': 'ExoticaZ Siterip Pack'},
+                         {'id': 4,
+                          'value': 4,
+                          'param': 'category[]',
+                          'cat': 'Pornstar Pack',
+                          'desc': 'ExoticaZ Pornstar Pack'},
+                         {'id': 5,
+                          'value': 5,
+                          'param': 'category[]',
+                          'cat': 'DVD',
+                          'desc': 'ExoticaZ DVD'},
+                         {'id': 6,
+                          'value': 6,
+                          'param': 'category[]',
+                          'cat': 'BluRay',
+                          'desc': 'ExoticaZ BluRay'},
+                         {'id': 7,
+                          'value': 7,
+                          'param': 'category[]',
+                          'cat': 'Photo Pack',
+                          'desc': 'ExoticaZ Photo Pack'},
+                         {'id': 8,
+                          'value': 8,
+                          'param': 'category[]',
+                          'cat': 'Books & Magazines',
+                          'desc': 'ExoticaZ Books & Magazines'}]},
+  'media_type': 'movie'}]
+
+OVERLAY_REMOVE = []

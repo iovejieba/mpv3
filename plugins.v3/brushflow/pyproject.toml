@@ -1,0 +1,7 @@
+[project]
+name = "moviepilot-plugin-brushflow"
+dynamic = ["version"]
+requires-python = ">=3.12"
+dependencies = [
+    "lxml>=4.9",
+]
