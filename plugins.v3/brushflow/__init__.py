@@ -349,7 +349,7 @@ class BrushFlow(_PluginBase):
     """
 
     plugin_name = "站点刷流增强版"
-    plugin_desc = "本地 30 天收益学习、硬安全线、容量闭环与可解释智能选删种。"
+    plugin_desc = "多站点独立刷流管理；内置 ExoticaZ 等全站 H&R 站点策略层：官方公式豁免、服务器账本镜像、标定缓冲与做种窗口红区；统一收益引擎与下载健康闭环。"
     plugin_icon = "brush-flow.png"
     plugin_version = __version__
     plugin_author = "jxxghp,InfinityPacer,Seed680"
