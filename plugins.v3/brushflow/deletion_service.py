@@ -56,6 +56,15 @@ def policy_for_document(document) -> SmartPolicy:
         max_delete_gb_per_run=overrides.max_release_gb_run or 0,
         max_delete_gb_per_day=overrides.max_release_gb_day or 0,
         excluded_tags=tuple(tag.strip() for tag in (document.deletion.exclude_tags or "").split(",") if tag.strip()),
+        rules_mode=document.deletion.engine if document.deletion.engine in {"rules", "hr_policy"} else None,
+        rules_seed_time_hours=float(document.deletion.rules_seed_time_hours or 0),
+        rules_seed_ratio=float(document.deletion.rules_seed_ratio or 0),
+        rules_seed_size_gb=float(document.deletion.rules_seed_size_gb or 0),
+        rules_hr_seed_time_hours=float(document.deletion.rules_hr_seed_time_hours or 0),
+        rules_match=document.deletion.rules_match or "any",
+        rules_download_time_hours=float(document.deletion.rules_download_time_hours or 0),
+        rules_seed_avgspeed_kbps=float(document.deletion.rules_seed_avgspeed_kbps or 0),
+        rules_inactive_time_hours=float(document.deletion.rules_inactive_time_hours or 0),
     )
 
 
@@ -71,9 +80,13 @@ def hard_safety_reasons(observation: dict, policy: SmartPolicy) -> list[str]:
         reasons.append("incomplete")
     if observation.get("hit_and_run"):
         reasons.append("hit_and_run")
-    if policy.min_seed_time_hours <= 0:
-        reasons.append("missing_min_seed_time")
-    elif number(observation["seeding_time"]) < policy.min_seed_time_hours * 3600:
+    if not policy.rules_mode:
+        if policy.min_seed_time_hours <= 0:
+            reasons.append("missing_min_seed_time")
+        elif number(observation["seeding_time"]) < policy.min_seed_time_hours * 3600:
+            reasons.append("min_seed_time")
+    elif policy.min_seed_time_hours > 0 and number(observation["seeding_time"]) < policy.min_seed_time_hours * 3600:
+        # rules/hr_policy 模式：最低保种为共享硬线（配置才生效），无"未配置"失败态
         reasons.append("min_seed_time")
     tags = observation.get("tags") or []
     tags = tags.split(",") if isinstance(tags, str) else tags
@@ -322,9 +335,13 @@ class DeletionService:
             gating.append("deletion_disabled")
         if self.document.deletion.paused:
             gating.append("deletion_paused")
-        if capacity <= 0 or self.policy.min_seed_time_hours <= 0:
+        if capacity <= 0:
             gating.append("configuration_required")
-        if number(self.document.deletion.observation_until) > now and not (manual and relax_limits):
+        if not self.policy.rules_mode and self.policy.min_seed_time_hours <= 0:
+            gating.append("configuration_required")
+        if (number(self.document.deletion.observation_until) > now
+                and not (manual and relax_limits) and self.policy.rules_mode is None):
+            # 观察期是 smart 引擎的安全机制；rules/hr_policy 为确定性语义不设观察期
             gating.append("observation")
         observation_map = {row["hash"]: row for row in observations}
         items = [{"hash": row.torrent_hash, "title": observation_map[row.torrent_hash].get("title"),
@@ -535,8 +552,12 @@ class DeletionService:
         self.write("smart_history", [row for rows in per_hash.values() for row in rows[-max(12, self.policy.low_value_confirmations):]])
         observations = [{**plan["records"].get(row["hash"], {}), **row,
                          "feature_key": feature_key(plan["records"].get(row["hash"], {}))} for row in plan["observations"]]
-        learning = update_learning_state(self.read("learning_state", {}), observations, now=now)
-        self.write("learning_state", learning)
+        # 学习采样仅属于 smart 引擎；rules/hr_policy 模式不产生学习样本
+        if self.policy.rules_mode is None:
+            learning = update_learning_state(self.read("learning_state", {}), observations, now=now)
+            self.write("learning_state", learning)
+        else:
+            learning = self.read("learning_state", {})
         self.write("capacity_recovery", plan["recovery"])
         evaluated_rows = []
         observation_map = {row["hash"]: row for row in plan["observations"]}

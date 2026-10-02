@@ -19,6 +19,7 @@ class IdentityConfig(BaseModel):
     downloader: str = Field(..., min_length=1, max_length=80)
     save_path: Optional[str] = None
     tag: Optional[str] = None
+    qb_category: Optional[str] = None
     enabled: bool = True
     notify: bool = True
 
@@ -66,6 +67,7 @@ class SelectionConfig(BaseModel):
     timezone_offset: float = 0
     include: Optional[str] = None
     exclude: Optional[str] = None
+    site_skip_tips: bool = False
 
     @model_validator(mode="after")
     def validate_ranges(self):
@@ -83,15 +85,45 @@ class SelectionConfig(BaseModel):
 
 class DeletionConfig(BaseModel):
     enabled: bool = False
+    engine: Literal["smart", "rules", "hr_policy"] = "smart"
     min_seed_hours: Optional[float] = Field(None, gt=0)
     exclude_tags: Optional[str] = None
     delete_data: bool = True
+    auto_archive_days: Optional[int] = Field(None, ge=1)
     invalid_tracker_cleanup: bool = False
     invalid_tracker_confirmations: int = Field(2, ge=1, le=5)
+    rules_seed_time_hours: Optional[float] = Field(None, gt=0)
+    rules_seed_ratio: Optional[float] = Field(None, gt=0)
+    rules_seed_size_gb: Optional[float] = Field(None, gt=0)
+    rules_hr_seed_time_hours: Optional[float] = Field(None, gt=0)
+    rules_match: Literal["any", "all"] = "any"
+    rules_download_time_hours: Optional[float] = Field(None, gt=0)
+    rules_seed_avgspeed_kbps: Optional[float] = Field(None, gt=0)
+    rules_inactive_time_hours: Optional[float] = Field(None, gt=0)
+    rules_buffer_hours: Optional[float] = Field(None, ge=0)
+    hr_clear_ratio_override: Optional[float] = Field(None, ge=0)
     paused: bool = False
     observation_started_at: Optional[float] = None
     observation_until: Optional[float] = None
     observation_extensions: int = Field(0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_rules_engine(self):
+        """规则模式至少要有一个达标条件（防配出永远不删的空转任务）。"""
+        if self.engine == "rules":
+            has_rule = any(value is not None for value in (
+                self.rules_seed_time_hours, self.rules_seed_ratio,
+                self.rules_seed_size_gb, self.rules_hr_seed_time_hours,
+                self.rules_download_time_hours, self.rules_seed_avgspeed_kbps,
+                self.rules_inactive_time_hours))
+            if not has_rule:
+                raise ValueError("规则删种模式至少需要配置一个达标条件")
+        if self.hr_clear_ratio_override is not None:
+            value = float(self.hr_clear_ratio_override)
+            # 豁免线语义：0=关闭 ratio 通道（最保守）；(0, 0.9) 比站点规则更激进，拒绝
+            if 0 < value < 0.9:
+                raise ValueError("H&R 豁免线不得低于站点规则 0.9（0 表示关闭分享率通道）")
+        return self
 
 
 class StrategyOverrides(BaseModel):
@@ -194,7 +226,8 @@ class TaskConfigV9(BaseModel):
         if self.deletion.enabled:
             if self.capacity.limit_gb is None:
                 raise ValueError("启用自动删种时必须设置任务容量")
-            if self.deletion.min_seed_hours is None:
+            # hr_policy 模式：公式+账本兜底，min_seed_hours 可选（额外保底）
+            if self.deletion.min_seed_hours is None and self.deletion.engine != "hr_policy":
                 raise ValueError("启用自动删种时必须设置站点最低保种时间")
         return self
 
@@ -212,6 +245,7 @@ class TaskConfigV9(BaseModel):
             "downloader": self.identity.downloader,
             "save_path": self.identity.save_path,
             "tag": self.identity.tag,
+            "qb_category": self.identity.qb_category,
             "brush_interval": self.schedule.brush_interval,
             "check_interval": self.schedule.check_interval,
             "cron": self.schedule.cron,
@@ -234,6 +268,7 @@ class TaskConfigV9(BaseModel):
             "seeder": self.selection.seeder_range,
             "pubtime": pubtime,
             "timezone_offset": self.selection.timezone_offset,
+            "site_skip_tips": self.selection.site_skip_tips,
             "include": self.selection.include,
             "exclude": self.selection.exclude,
             "smart_enabled": self.deletion.enabled,
@@ -244,6 +279,18 @@ class TaskConfigV9(BaseModel):
             "smart_selection_min_score": override.selection_min_score,
             "smart_selection_max_add_per_run": override.max_add_per_run,
             "min_seed_time": self.deletion.min_seed_hours,
+            "delete_engine": self.deletion.engine,
+            "delete_rules_seed_time_hours": self.deletion.rules_seed_time_hours,
+            "delete_rules_seed_ratio": self.deletion.rules_seed_ratio,
+            "delete_rules_seed_size_gb": self.deletion.rules_seed_size_gb,
+            "delete_rules_hr_seed_time_hours": self.deletion.rules_hr_seed_time_hours,
+            "delete_rules_match": self.deletion.rules_match,
+            "delete_rules_download_time_hours": self.deletion.rules_download_time_hours,
+            "delete_rules_seed_avgspeed_kbps": self.deletion.rules_seed_avgspeed_kbps,
+            "delete_rules_inactive_time_hours": self.deletion.rules_inactive_time_hours,
+            "delete_rules_buffer_hours": self.deletion.rules_buffer_hours,
+            "delete_hr_clear_ratio_override": self.deletion.hr_clear_ratio_override,
+            "auto_archive_days": self.deletion.auto_archive_days,
             "delete_except_tags": self.deletion.exclude_tags,
             "delete_files": self.deletion.delete_data,
             "invalid_seed_cleanup_enabled": self.deletion.invalid_tracker_cleanup,

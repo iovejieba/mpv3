@@ -306,6 +306,17 @@ class BrushTaskConfig:
         self.qb_category = self._clean_text(config.get("qb_category"))
         self.site_hr_active = bool(config.get("site_hr_active", False))
         self.site_skip_tips = bool(config.get("site_skip_tips", False))
+        self.delete_engine = self._clean_text(config.get("delete_engine")) or "smart"
+        self.rules_seed_time_hours = self._parse_number(config.get("delete_rules_seed_time_hours"))
+        self.rules_seed_ratio = self._parse_number(config.get("delete_rules_seed_ratio"))
+        self.rules_seed_size_gb = self._parse_number(config.get("delete_rules_seed_size_gb"))
+        self.rules_hr_seed_time_hours = self._parse_number(config.get("delete_rules_hr_seed_time_hours"))
+        self.rules_match = str(config.get("delete_rules_match") or "any")
+        self.rules_download_time_hours = self._parse_number(config.get("delete_rules_download_time_hours"))
+        self.rules_seed_avgspeed_kbps = self._parse_number(config.get("delete_rules_seed_avgspeed_kbps"))
+        self.rules_inactive_time_hours = self._parse_number(config.get("delete_rules_inactive_time_hours"))
+        self.rules_buffer_hours = self._parse_number(config.get("delete_rules_buffer_hours"))
+        self.hr_clear_ratio_override = self._parse_number(config.get("delete_hr_clear_ratio_override"))
         self.rss_support = bool(config.get("rss_support", False))
         self.tag = self._clean_text(config.get("tag"))
 
@@ -352,7 +363,7 @@ class BrushFlow(_PluginBase):
     plugin_desc = "多站点独立刷流管理；内置 ExoticaZ 等全站 H&R 站点策略层：官方公式豁免、服务器账本镜像、标定缓冲与做种窗口红区；统一收益引擎与下载健康闭环。"
     plugin_icon = "brush-flow.png"
     plugin_version = __version__
-    plugin_author = "jxxghp,InfinityPacer,Seed680,BBin17,iovejieba"
+    plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
     plugin_order = 21
@@ -713,6 +724,10 @@ class BrushFlow(_PluginBase):
 
     def create_task(self, payload: TaskConfigV9) -> schemas.Response:
         """创建一个站点与下载器均独立的刷流任务"""
+        # 用户建任务即明确使用意图，自动启用插件总开关
+        if not self._enabled:
+            self._enabled = True
+            self._save_config()
         document = payload.model_copy(deep=True)
         document.id = uuid.uuid4().hex
         document.revision = 1
@@ -741,6 +756,10 @@ class BrushFlow(_PluginBase):
         )
 
     def update_task(self, task_id: str, payload: TaskConfigV9) -> schemas.Response:
+        # 用户编辑任务即明确使用意图，自动启用插件总开关
+        if not self._enabled:
+            self._enabled = True
+            self._save_config()
         try:
             with self._get_task_service().guard(task_id):
                 return self._update_task_locked(task_id, payload)
@@ -863,13 +882,20 @@ class BrushFlow(_PluginBase):
         if not service or not service.instance:
             raise DownloaderUnavailable("下载器不可用")
         site_rule, ratio_override = self._site_hr_policy_for_task(task)
+        # 缓冲优先级：用户显式设置 > 标定数据 > 默认 6h
         buffer_hours = _SITE_HR_BUFFER_DEFAULT
-        try:
-            calibration = self._get_task_data(task.id, "site_hr_calibration")
-            if calibration and calibration.get("buffer_hours") is not None:
-                buffer_hours = max(0.0, min(float(calibration["buffer_hours"]), _SITE_HR_BUFFER_MAX))
-        except (TypeError, ValueError):
-            pass
+        if task.rules_buffer_hours is not None:
+            try:
+                buffer_hours = max(0.0, min(float(task.rules_buffer_hours), _SITE_HR_BUFFER_MAX))
+            except (TypeError, ValueError):
+                pass
+        else:
+            try:
+                calibration = self._get_task_data(task.id, "site_hr_calibration")
+                if calibration and calibration.get("buffer_hours") is not None:
+                    buffer_hours = max(0.0, min(float(calibration["buffer_hours"]), _SITE_HR_BUFFER_MAX))
+            except (TypeError, ValueError):
+                pass
         ledger_lookup = None
         if site_rule:
             site_row = SiteOper().get(task.site_id)
@@ -887,7 +913,11 @@ class BrushFlow(_PluginBase):
         )
 
     def _site_hr_policy_for_task(self, task: BrushTaskConfig) -> tuple:
-        """按任务站点 domain 解析全站 H&R 策略与豁免线覆盖；无策略返回 (None, None)。"""
+        """按任务站点 domain 解析全站 H&R 策略与豁免线覆盖；无策略返回 (None, None)。
+
+        豁免线来源：任务文档的 hr_clear_ratio_override（向导接管表单设置，
+        0=关闭 ratio 通道）；未设置用站点策略内置默认（1.0）。
+        """
         try:
             site = SiteOper().get(task.site_id)
         except Exception as err:
@@ -896,14 +926,8 @@ class BrushFlow(_PluginBase):
         rule = resolve_rule(getattr(site, "domain", None) if site else None)
         if rule is None:
             return None, None
-        data = self.get_data("site_hr_policies")
-        policies = data if isinstance(data, dict) else {}
-        override = (policies.get(rule.domain) or {}).get("clear_ratio")
-        try:
-            override = float(override) if override is not None else None
-        except (TypeError, ValueError):
-            override = None
-        return rule, override
+        override = task.hr_clear_ratio_override
+        return rule, (float(override) if override is not None else None)
 
     def preview_cleanup(self, task_id: str, payload: CleanupPreviewPayload) -> schemas.Response:
         if task_id not in self._task_documents:
@@ -1612,7 +1636,9 @@ class BrushFlow(_PluginBase):
             "seeding_size": sum(row.get("seeding_size", 0) for row in task_rows),
         }
         site_options = [
-            {"title": site.get("name"), "value": site.get("id")}
+            {"title": site.get("name"), "value": site.get("id"),
+             "domain": site.get("domain"),
+             "has_hr_policy": bool(resolve_rule(normalize_domain(site.get("domain"))))}
             for site in SitesHelper().get_indexers()
             if not site.get("public")
         ]
@@ -1701,12 +1727,12 @@ class BrushFlow(_PluginBase):
         return result
 
     def _ensure_site_user_stats(self, task: BrushTaskConfig, site: Any, *, force: bool = False) -> None:
-        """按需探活站点用户统计（登录页 ratio-bar），供分享率显示与控制在 MP 无数据时兜底。
+        """按需探活站点用户统计（登录页 ratio-bar），供账本同步与分享率显示兜底。
 
-        仅对启用分享率控制、且注册了统计解析器的站点发起网络请求；带 TTL 缓存
-        （含失败负缓存），MP 已有用户数据时不探活。失败静默降级，不影响刷流。
+        探活条件：站点命中 HR 策略（账本需要用户名）或 启用了分享率控制。
+        带 TTL 缓存（含失败负缓存），MP 已有用户数据时不探活。失败静默降级。
         """
-        if not getattr(task, "site_ratio_control", False) or not site:
+        if not site:
             return
         domain = normalize_domain(getattr(site, "domain", None))
         parser = resolve_stats_parser(domain)
@@ -3068,6 +3094,8 @@ class BrushFlow(_PluginBase):
             slow_speed_kbps=document.health.slow_speed_kbps,
             max_sample_gap_minutes=max(60, document.schedule.check_interval * 2),
         ) if document else policy_for_profile(task.smart_profile if task else "balanced")
+        # 下载健康（自动修复/暂停）绑定 smart 引擎；rules/hr_policy 模式仅观测统计
+        smart_only = not (document and document.deletion.engine == "smart")
         return DownloadHealthService(
             downloader=self.downloader,
             read=self._current_task_data,
@@ -3076,8 +3104,8 @@ class BrushFlow(_PluginBase):
             normalize=self.__get_torrent_info,
             notify=self.__send_message,
             policy=policy,
-            auto_repair=bool(document and document.health.auto_repair),
-            pause_after_failed_repair=bool(document and document.health.pause_after_failed_repair),
+            auto_repair=bool(document and document.health.auto_repair) and not smart_only,
+            pause_after_failed_repair=bool(document and document.health.pause_after_failed_repair) and not smart_only,
             clock=time.time,
         )
 

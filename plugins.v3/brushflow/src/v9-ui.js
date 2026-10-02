@@ -14,7 +14,7 @@ export function newTaskV9() {
     goal: { enabled: false, ratio_target: null, reached_behavior: 'continue' },
     capacity: { limit_gb: null, max_downloads: null, upload_limit_kbps: null, download_limit_kbps: null, torrent_upload_limit_kbps: null, torrent_download_limit_kbps: null },
     selection: { enabled: true, source: 'page', promotion: 'free', exclude_hr: true, site_hr_active: false, exclude_subscriptions: true, size_min_gb: 0.5, size_max_gb: null, seeder_range: null, published_min_minutes: null, published_max_minutes: null, timezone_offset: 0, include: null, exclude: null },
-    deletion: { enabled: false, min_seed_hours: null, exclude_tags: null, delete_data: true, invalid_tracker_cleanup: false, invalid_tracker_confirmations: 2, paused: false, observation_started_at: null, observation_until: null, observation_extensions: 0 },
+    deletion: { enabled: false, engine: 'smart', min_seed_hours: null, exclude_tags: null, delete_data: true, invalid_tracker_cleanup: false, invalid_tracker_confirmations: 2, rules_seed_time_hours: null, rules_seed_ratio: null, rules_seed_size_gb: null, rules_hr_seed_time_hours: null, rules_match: 'any', rules_download_time_hours: null, rules_seed_avgspeed_kbps: null, rules_inactive_time_hours: null, hr_clear_ratio_override: null, paused: false, observation_started_at: null, observation_until: null, observation_extensions: 0 },
     strategy: { profile: 'balanced', overrides: { ...profileDefaults.balanced } },
     health: { stalled_confirmations: 3, stalled_window_minutes: 30, slow_after_hours: 6, slow_speed_kbps: 128, auto_repair: true, pause_after_failed_repair: true },
   }
@@ -42,7 +42,12 @@ export function normalizeTaskV9(task) {
     ['capacity','torrent_upload_limit_kbps'], ['capacity','torrent_download_limit_kbps'],
     ['selection','size_min_gb'], ['selection','size_max_gb'],
     ['selection','published_min_minutes'], ['selection','published_max_minutes'],
-    ['deletion','min_seed_hours'], ['strategy','overrides','max_release_gb_run'],
+    ['deletion','min_seed_hours'], ['deletion','rules_seed_time_hours'],
+    ['deletion','rules_seed_ratio'], ['deletion','rules_seed_size_gb'],
+    ['deletion','rules_hr_seed_time_hours'], ['deletion','rules_download_time_hours'],
+    ['deletion','rules_seed_avgspeed_kbps'], ['deletion','rules_inactive_time_hours'],
+    ['deletion','hr_clear_ratio_override'],
+    ['strategy','overrides','max_release_gb_run'],
     ['strategy','overrides','max_release_gb_day'],
   ]
   optionalNumbers.forEach(path => {

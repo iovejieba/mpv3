@@ -156,6 +156,7 @@ class TorrentObservation:
     ratio: float = 0.0
     progress: float = 0.0
     seeding_time: float = 0.0
+    download_elapsed: float = 0.0
     inactive_time: float = 0.0
     avg_upload_speed: float = 0.0
     upload_speed: float = 0.0
@@ -194,6 +195,7 @@ class TorrentObservation:
             ratio=_positive(data.get("ratio")),
             progress=max(min(progress, 100.0), 0.0),
             seeding_time=_positive(data.get("seeding_time")),
+            download_elapsed=_positive(data.get("dltime", data.get("download_elapsed"))),
             inactive_time=_positive(data.get("inactive_time", data.get("iatime"))),
             avg_upload_speed=_positive(data.get("avg_upload_speed", data.get("avg_upspeed"))),
             upload_speed=_positive(data.get("upload_speed", data.get("upspeed"))),
@@ -256,6 +258,16 @@ class SmartPolicy:
     max_delete_gb_per_run: float = 0.0
     max_delete_gb_per_day: float = 0.0
     excluded_tags: tuple[str, ...] = ()
+    # 双主引擎：rules/hr_policy 模式下走确定性条件链（官方 6.x 删种语义），None = smart
+    rules_mode: Optional[str] = None
+    rules_seed_time_hours: float = 0.0
+    rules_seed_ratio: float = 0.0
+    rules_seed_size_gb: float = 0.0
+    rules_hr_seed_time_hours: float = 0.0
+    rules_match: str = "any"
+    rules_download_time_hours: float = 0.0
+    rules_seed_avgspeed_kbps: float = 0.0
+    rules_inactive_time_hours: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -711,6 +723,41 @@ def retention_score(
     return round(score, 2), contributions
 
 
+def _rules_conditions(observation: TorrentObservation, policy: SmartPolicy) -> list[tuple[str, bool]]:
+    """官方 6.x 条件删种链的忠实移植：返回 [(条件名, 是否满足)]。
+
+    H&R 行走专用条件（hr_seed_time / seed_ratio / seed_size 先到先删语义），
+    非 H&R 行走常规条件；条件未配置即不参与 any/all 判定。
+    """
+    conditions: list[tuple[str, bool]] = []
+    seed_hours = observation.seeding_time / 3600
+    ratio = observation.uploaded / observation.total_size if observation.total_size > 0 else 0.0
+    uploaded_gb = observation.uploaded / (1 << 30)
+    if observation.hit_and_run:
+        if policy.rules_hr_seed_time_hours > 0:
+            conditions.append(("hr_seed_time", seed_hours >= policy.rules_hr_seed_time_hours))
+        if policy.rules_seed_ratio > 0:
+            conditions.append(("seed_ratio", ratio >= policy.rules_seed_ratio))
+        if policy.rules_seed_size_gb > 0:
+            conditions.append(("seed_size", uploaded_gb >= policy.rules_seed_size_gb))
+        return conditions
+    if policy.rules_seed_time_hours > 0:
+        conditions.append(("seed_time", seed_hours >= policy.rules_seed_time_hours))
+    if policy.rules_seed_ratio > 0:
+        conditions.append(("seed_ratio", ratio >= policy.rules_seed_ratio))
+    if policy.rules_seed_size_gb > 0:
+        conditions.append(("seed_size", uploaded_gb >= policy.rules_seed_size_gb))
+    if policy.rules_download_time_hours > 0:
+        conditions.append(("download_time", not observation.completed
+                           and observation.download_elapsed >= policy.rules_download_time_hours * 3600))
+    if policy.rules_seed_avgspeed_kbps > 0:
+        conditions.append(("seed_avgspeed", seed_hours >= 0.5
+                           and observation.avg_upload_speed < policy.rules_seed_avgspeed_kbps * 1024))
+    if policy.rules_inactive_time_hours > 0:
+        conditions.append(("inactive_time", observation.inactive_time >= policy.rules_inactive_time_hours * 3600))
+    return conditions
+
+
 def evaluate_candidate(
     observation: TorrentObservation | Mapping[str, Any],
     policy: SmartPolicy,
@@ -720,20 +767,45 @@ def evaluate_candidate(
         observation = TorrentObservation.from_mapping(observation)
     def blocked(code):
         return DecisionResult(observation.torrent_hash, "blocked", 100.0, (code,))
+    rules_active = bool(policy.rules_mode)
+    if (rules_active and policy.rules_download_time_hours > 0 and not observation.completed
+            and observation.download_elapsed >= policy.rules_download_time_hours * 3600):
+        # 官方 download_time 语义：未完成且下载耗时超时 → 删（仅 rules 引擎提供）
+        return DecisionResult(observation.torrent_hash, "candidate", 100.0, ("rules_download_timeout",))
     if not observation.completed:
         return blocked("incomplete")
     if observation.hit_and_run:
-        return blocked("hit_and_run")
-    if policy.min_seed_time_hours <= 0:
-        return blocked("missing_min_seed_time")
+        if policy.rules_mode == "hr_policy":
+            # 策略接管站点：非豁免 HR 由策略层裁决（账本/公式未达标不删）
+            return blocked("hr_not_cleared")
+        hr_conditions_configured = (policy.rules_hr_seed_time_hours > 0
+                                    or policy.rules_seed_ratio > 0
+                                    or policy.rules_seed_size_gb > 0)
+        if not (rules_active and hr_conditions_configured):
+            return blocked("hit_and_run")
     if observation.seeding_time < policy.min_seed_time_hours * 3600:
         return blocked("min_seed_time")
+    if not rules_active and policy.min_seed_time_hours <= 0:
+        return blocked("missing_min_seed_time")
     if set(policy.excluded_tags).intersection(observation.tags):
         return blocked("excluded_tag")
     if observation.has_real_upload:
         return blocked("real_upload")
     if observation.active_peers is not None and observation.active_peers > 0:
         return blocked("active_connection")
+    if rules_active:
+        if policy.rules_mode == "hr_policy":
+            # 豁免即候选：命中策略站点的删种规则就是策略本身（共享安全线已在上方通过）
+            return DecisionResult(observation.torrent_hash, "candidate", 100.0, ("hr_exempted",))
+        conditions = _rules_conditions(observation, policy)
+        if not conditions:
+            return blocked("rules_not_configured")
+        met = (any(flag for _, flag in conditions) if policy.rules_match == "any"
+               else all(flag for _, flag in conditions))
+        details = {name: flag for name, flag in conditions}
+        if met:
+            return DecisionResult(observation.torrent_hash, "candidate", 100.0, ("rules_met",), details)
+        return DecisionResult(observation.torrent_hash, "blocked", 100.0, ("rules_not_met",), details)
     if policy.protect_active_demand and observation.leechers and (
         _demand_confirmations(observation, history) >= max(policy.demand_confirmations, 1)
     ):
