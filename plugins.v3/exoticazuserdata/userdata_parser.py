@@ -134,6 +134,48 @@ def parse_ratio_bar(html_text: str) -> Optional[Dict[str, Any]]:
     return out
 
 
+_MONTH_MAP = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+              "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+
+
+def _normalize_join_date(text: str) -> str:
+    """"25 Mar 2023 11:57 am (3 years ago)" → "2023-03-25 11:57"（ISO, 便于展示与排序）。
+
+    站点为英文月缩写 + 12 小时制; 无法解析时原样返回(剥离括号相对时间)。
+    """
+    text = norm_space(text)
+    m = re.search(r"(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})(?:\s+(\d{1,2}):(\d{2})\s*(am|pm))?",
+                  text, re.IGNORECASE)
+    if not m:
+        return norm_space(text.split("(")[0])
+    day, month = int(m.group(1)), _MONTH_MAP.get(m.group(2).lower())
+    if not month:
+        return norm_space(text.split("(")[0])
+    out = f"{int(m.group(3)):04d}-{month:02d}-{day:02d}"
+    if m.group(4):
+        hour, minute = int(m.group(4)), int(m.group(5))
+        ap = (m.group(6) or "").lower()
+        if ap == "pm" and hour < 12:
+            hour += 12
+        if ap == "am" and hour == 12:
+            hour = 0
+        out += f" {hour:02d}:{minute:02d}"
+    return out
+
+
+def _parse_size_precise(text: str) -> int:
+    """取文本中最后一个容量 token 的字节数。
+
+    个人页统计表的值单元 = 主显示值(舍入 TB/GB) + 尾部精确 MB 徽标
+    (如 "25.69 TB 26,939,491 MB"), 尾部 token 是字节级精确值;
+    只有一个 token 时行为与 _parse_size_bytes 一致。
+    """
+    best = 0
+    for m in re.finditer(r"([\d.,]+)\s*([KMGTP])i?B", text or "", re.IGNORECASE):
+        best = _parse_size_bytes(m.group(0))
+    return best
+
+
 def parse_profile(html_text: str) -> Dict[str, Any]:
     """解析 /profile/{username} 信息表: Rank -> 等级, Joined -> 注册时间。"""
     html = etree.HTML(html_text or "")
@@ -149,49 +191,47 @@ def parse_profile(html_text: str) -> Dict[str, Any]:
         if label == "Rank" and value:
             out["user_level"] = value
         elif label == "Joined" and value:
-            # "25 Mar 2023 11:57 am (3 years ago)" -> 去掉括号相对时间
-            out["join_at"] = norm_space(value.split("(")[0])
+            out["join_at"] = _normalize_join_date(value)
+        elif label == "Uploaded" and value:
+            out["upload"] = _parse_size_precise(value)      # 精确 MB 徽标优先
+        elif label == "Downloaded" and value:
+            out["download"] = _parse_size_precise(value)
+        elif label == "Ratio" and value:
+            out["ratio"] = _parse_number(value)
     return out
 
 
 def parse_active_page(html_text: str) -> Tuple[int, int, List[Tuple[int, int]], Optional[str]]:
-    """解析做种列表页。返回 (本页条数, 本页体积字节, [(做种人数, 体积)...], 下一页URL或None)。
+    """解析做种列表页（exoticaz 二开版 11 列结构, 2026-10-03 实机样本定稿）。
+    返回 (本页条数, 本页体积字节合计, [(做种人数, 体积)...], 下一页页码或None)。
 
-    表头自适应: 存在 class 含 size/seeders 的 th 时按其列序定位(与官方 Unit3d parser 一致)。
-
-    2026-09-30 实机修复（exoticaz 线上 /profile/{u}/active 触发 ValueError: '...'）：
-    - 做种数单元格会渲染 "..." 占位符（懒加载/隐藏数据），_NUM_RE 字符类含点号会
-      命中它 → float("...") 炸采集；_parse_number 已加"无数字返回 0"守卫；
-    - 逐行取列：原先 sizes/seeders 两列各自收集再按序号配对，行内缺 td（空状态
-      colspan 行等）会两列错位甚至越界；
-    - 多个 seeders th 时取第一个（补 [1] 锚点，与 size 列探测对称）。
+    真实列序: [1]空 [2]标题+S L C体积 [3]Progress [4]Stat(seed) [5]Client
+    [6]上传 [7]下载+抵扣 [8]Left [9]逐种Ratio [10]添加 [11]更新。
+    体积取 [2] 尾缀（S L C 体积, 与 history 账本同款尾缀正则）；
+    官方 Unit3d 的 th class 探测在此站点无效（exoticaz 表头无 size/seeders class）。
     """
     html = etree.HTML(html_text or "")
     if html is None or len(html) == 0:
         return 0, 0, [], None
 
-    size_col, seeders_col = 9, 2
-    if html.xpath('//thead//th[contains(@class,"size")]'):
-        size_col = len(html.xpath('//thead//th[contains(@class,"size")][1]/preceding-sibling::th')) + 1
-    if html.xpath('//thead//th[contains(@class,"seeders")]'):
-        seeders_col = len(html.xpath('//thead//th[contains(@class,"seeders")][1]/preceding-sibling::th')) + 1
-
     total, info, count = 0, [], 0
-    for tr in html.xpath("//tr"):
+    for tr in html.xpath("//tbody//tr"):
         cells = tr.xpath("./td")
-        if len(cells) < max(size_col, seeders_col):
-            continue  # 空状态行（colspan）/列不足行
-        size = _parse_size_bytes(cells[size_col - 1].xpath("string(.)"))
-        seed = int(_parse_number(cells[seeders_col - 1].xpath("string(.)")))
-        if size <= 0 and seed <= 0:
-            continue  # 非数据行（"..." 占位且无体积等）
+        if len(cells) < 11:
+            continue
+        tail = norm_space(cells[1].xpath("string(.)"))
+        m = re.search(r"(\d+)\s+(\d+)\s+(\d+)\s+([\d.,]+\s*[KMGTP]i?B)\s*$", tail, re.IGNORECASE)
+        if not m:
+            continue  # 表头/空状态/非数据行
+        size = _parse_size_bytes(m.group(4))
+        if size <= 0:
+            continue
         count += 1
         total += size
-        info.append((seed, size))
+        info.append((int(m.group(1)), size))
 
     next_page = None
-    # 取 active 之后第一个数字页码(官方实现要求后续项 >=2 才翻页, 会漏抓最后一页)
-    pages = html.xpath('//ul[@class="pagination"]/li[contains(@class,"active")]/following-sibling::li')
+    pages = html.xpath('//ul[contains(@class,"pagination")]/li[contains(@class,"active")]/following-sibling::li')
     for li in pages:
         num = norm_space(li.xpath("string(.)"))
         if num.isdigit():
@@ -200,17 +240,18 @@ def parse_active_page(html_text: str) -> Tuple[int, int, List[Tuple[int, int]], 
     return count, total, info, next_page
 
 
-# ---------------------------------------------------------------- 编排
-
-def collect_user_data(fetch: Callable[..., Optional[Any]],
-                      base_url: str,
-                      throttle: Optional[RequestThrottle] = None) -> Dict[str, Any]:
-    """完整采集编排。fetch(url) -> (status, text) 或 None。
+def collect_user_data(fetch: Callable[..., Any], base_url: str,
+                      throttle: Optional[RequestThrottle] = None,
+                      include_active: bool = True) -> Dict[str, Any]:
+    """完整采集编排。fetch(url) -> (status, text) | None。
 
     返回 dict:
       登录失效  -> {"err_msg": "..."}  (无 userid, 宿主不持久化)
       成功      -> username/userid/user_level/join_at/bonus/upload/download/ratio/
                    seeding/leeching/seeding_size/seeding_info
+    做种数以 ratio-bar 为准; 做种体积从 /profile/{u}/active 逐页累计。
+    include_active=False 时跳过做种页爬取(结果不含 seeding_size/seeding_info),
+    供调用方配合缓存使用——做种体积变化慢, 无需每次刷新都全量翻页。
     """
     throttle = throttle or RequestThrottle()
     result: Dict[str, Any] = {}
@@ -238,7 +279,7 @@ def collect_user_data(fetch: Callable[..., Optional[Any]],
 
     result.update({
         "username": bar.get("username"),
-        "userid": bar.get("username"),  # exoticaz 无数字 ID，用户名即唯一标识
+        "userid": bar.get("username"),
         "user_level": bar.get("user_level") or "",
         "join_at": "",
         "bonus": float(bar.get("bonus") or 0.0),
@@ -258,14 +299,21 @@ def collect_user_data(fetch: Callable[..., Optional[Any]],
     if profile.get("user_level") and not result["user_level"]:
         result["user_level"] = profile["user_level"]
     result["join_at"] = profile.get("join_at", "")
+    # 个人页统计表的精确值优先于 ratio-bar 的舍入主值(25.69 TB 粒度 ≈ 11 GiB,
+    # 每天几百 MB 的上传推不动主值 → 面板"冻结"; badge MB 为字节级精确值)
+    for key in ("upload", "download", "ratio"):
+        if profile.get(key):
+            result[key] = profile[key]
 
     # 3. 做种列表: 累计做种体积与逐种信息(失败不致命, 做种数以 ratio-bar 为准)
-    #    DESIGN.md §7 预案的降级：做种页结构异常/解析失败 → 只报 ratio-bar 的做种数，
-    #    seeding_size 缺省 0，绝不让本段异常炸掉整个采集（2026-09-30 实机教训）。
+    #    DESIGN.md §7 预案的降级: 做种页结构异常/解析失败 → 只报 ratio-bar 做种数,
+    #    seeding_size 缺省 0, 绝不让本段异常炸掉整个采集(2026-09-30 实机教训)。
+    if not include_active:
+        return result
     page = 1
-    while page <= 50:  # 翻页上限保护
-        _, active_html = get(f"/profile/{username}/active?perPage=100&page={page}")
+    while page <= 20:  # 翻页上限保护(perPage=100 → 覆盖 2000 条做种)
         try:
+            _, active_html = get(f"/profile/{username}/active?perPage=100&page={page}")
             _, total, info, next_num = parse_active_page(active_html)
         except Exception:
             break
@@ -276,20 +324,6 @@ def collect_user_data(fetch: Callable[..., Optional[Any]],
         page = int(next_num)
     return result
 
-
-# ---------------------------------------------------------------- H&R 账本(history 页)
-
-# 站点规则（合同以 exoticaz-python-reference/刷流插件对接说明.md §2.3 为准，2026-09-30 实证）:
-#   要求 = ceil(max(f(size), 72))，f 同参考实现 —— 与 _hr_required_hours 一致;
-#   做种窗口: 要求须在下载完成后 W = 96 小时（4 天）内达成，锚点 = 完成时刻
-#   （不是添加时刻）；站点按小时 cron 巡检（≤1h 粒度），窗口到期未达标 ->
-#   即使仍在做种也记账为 H&R（tooltip: "Counted as a Hit & Run:
-#   connected, but past its seeding window. Keep seeding, X left"）——二开差异点；
-#   离线消耗窗口预算但不计入做种时长（实测漂移 ≈6h：离线 ~5h + announce 结算滞后 ~1h）；
-#   做种中未到期 -> "Hit & Run not fulfilled but not counted for actively seeded torrent";
-#   hnr=1 过滤视图 = 未达标观察名单（含已记账），不是"已命中"历史；
-#   已记账可自愈：继续做种到倒计时归零自动移出名单；BP 清除 = round(10 × 剩余要求小时)；
-#   倒计时按 announce 结算（announce 之间冻结），删种决定前应 force re-announce。
 
 def _tooltip_text(el) -> str:
     """取 tooltip 文本: 兼容服务端原始 HTML(title) 与浏览器另存 DOM

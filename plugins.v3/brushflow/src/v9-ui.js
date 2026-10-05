@@ -1,7 +1,7 @@
 export const profileDefaults = {
-  conservative: { selection_min_score: 40, max_add_per_run: 2, deletion_score_threshold: 35, candidate_confirmations: 4, confirmation_minutes: 60, capacity_trigger_percent: 90, capacity_target_percent: 85, max_delete_per_run: 2, max_delete_percent_day: 3, max_release_percent_run: 2, max_release_percent_day: 4, max_release_gb_run: null, max_release_gb_day: null, cold_protection_minutes: 720, demand_confirmations: 2 },
-  balanced: { selection_min_score: 30, max_add_per_run: 5, deletion_score_threshold: 40, candidate_confirmations: 3, confirmation_minutes: 30, capacity_trigger_percent: 90, capacity_target_percent: 85, max_delete_per_run: 3, max_delete_percent_day: 5, max_release_percent_run: 4, max_release_percent_day: 8, max_release_gb_run: null, max_release_gb_day: null, cold_protection_minutes: 360, demand_confirmations: 2 },
-  aggressive: { selection_min_score: 22, max_add_per_run: 8, deletion_score_threshold: 48, candidate_confirmations: 2, confirmation_minutes: 15, capacity_trigger_percent: 90, capacity_target_percent: 85, max_delete_per_run: 5, max_delete_percent_day: 10, max_release_percent_run: 8, max_release_percent_day: 15, max_release_gb_run: null, max_release_gb_day: null, cold_protection_minutes: 180, demand_confirmations: 2 },
+  conservative: { selection_min_score: 40, max_add_per_run: 2, deletion_score_threshold: 35, candidate_confirmations: 4, confirmation_minutes: 60, capacity_trigger_percent: 90, capacity_target_percent: 85, max_delete_per_run: 2, max_delete_percent_day: 3, max_release_percent_run: 2, max_release_percent_day: 4, max_release_gb_run: null, max_release_gb_day: null, cold_protection_minutes: 720, demand_confirmations: 2, protect_active_demand: true },
+  balanced: { selection_min_score: 30, max_add_per_run: 5, deletion_score_threshold: 40, candidate_confirmations: 3, confirmation_minutes: 30, capacity_trigger_percent: 90, capacity_target_percent: 85, max_delete_per_run: 3, max_delete_percent_day: 5, max_release_percent_run: 4, max_release_percent_day: 8, max_release_gb_run: null, max_release_gb_day: null, cold_protection_minutes: 360, demand_confirmations: 2, protect_active_demand: true },
+  aggressive: { selection_min_score: 22, max_add_per_run: 8, deletion_score_threshold: 48, candidate_confirmations: 2, confirmation_minutes: 15, capacity_trigger_percent: 90, capacity_target_percent: 85, max_delete_per_run: 5, max_delete_percent_day: 10, max_release_percent_run: 8, max_release_percent_day: 15, max_release_gb_run: null, max_release_gb_day: null, cold_protection_minutes: 180, demand_confirmations: 2, protect_active_demand: true },
 }
 
 export function newTaskV9() {
@@ -14,7 +14,7 @@ export function newTaskV9() {
     goal: { enabled: false, ratio_target: null, reached_behavior: 'continue' },
     capacity: { limit_gb: null, max_downloads: null, upload_limit_kbps: null, download_limit_kbps: null, torrent_upload_limit_kbps: null, torrent_download_limit_kbps: null },
     selection: { enabled: true, source: 'page', promotion: 'free', exclude_hr: true, site_hr_active: false, exclude_subscriptions: true, size_min_gb: 0.5, size_max_gb: null, seeder_range: null, published_min_minutes: null, published_max_minutes: null, timezone_offset: 0, include: null, exclude: null },
-    deletion: { enabled: false, engine: 'smart', min_seed_hours: null, exclude_tags: null, delete_data: true, invalid_tracker_cleanup: false, invalid_tracker_confirmations: 2, rules_seed_time_hours: null, rules_seed_ratio: null, rules_seed_size_gb: null, rules_hr_seed_time_hours: null, rules_match: 'any', rules_download_time_hours: null, rules_seed_avgspeed_kbps: null, rules_inactive_time_hours: null, hr_clear_ratio_override: null, paused: false, observation_started_at: null, observation_until: null, observation_extensions: 0 },
+    deletion: { enabled: false, engine: 'smart', min_seed_hours: null, exclude_tags: null, delete_data: true, invalid_tracker_cleanup: false, invalid_tracker_confirmations: 2, rules_seed_time_hours: null, rules_seed_ratio: null, rules_seed_size_gb: null, rules_hr_seed_time_hours: null, rules_match: 'any', rules_download_time_hours: null, rules_seed_avgspeed_kbps: null, rules_inactive_time_hours: null, smart_release_ratio: null, smart_release_hours: null, release_on_maturity: false, hr_clear_ratio_override: null, paused: false, observation_started_at: null, observation_until: null, observation_extensions: 0 },
     strategy: { profile: 'balanced', overrides: { ...profileDefaults.balanced } },
     health: { stalled_confirmations: 3, stalled_window_minutes: 30, slow_after_hours: 6, slow_speed_kbps: 128, auto_repair: true, pause_after_failed_repair: true },
   }
@@ -46,6 +46,7 @@ export function normalizeTaskV9(task) {
     ['deletion','rules_seed_ratio'], ['deletion','rules_seed_size_gb'],
     ['deletion','rules_hr_seed_time_hours'], ['deletion','rules_download_time_hours'],
     ['deletion','rules_seed_avgspeed_kbps'], ['deletion','rules_inactive_time_hours'],
+    ['deletion','smart_release_ratio'], ['deletion','smart_release_hours'],
     ['deletion','hr_clear_ratio_override'],
     ['strategy','overrides','max_release_gb_run'],
     ['strategy','overrides','max_release_gb_day'],
@@ -92,4 +93,16 @@ export function taskPreview(task, siteName = '当前站点') {
 
 export function healthTone(level) {
   return ({ error: 'error', warning: 'warning', info: 'info', success: 'success' })[level] || 'secondary'
+}
+
+// 紧凑列表用的状态短形态；完整语句仍由 health.title 承载（悬停可见）
+export function healthShort(level) {
+  return ({ error: '异常', warning: '警告', info: '观察', success: '健康' })[level] || '待检'
+}
+
+// 日上传速率展示：刷流小值常见（<0.1GB/天），用 MB 保证不再显示成 0.0
+export function formatUploadPerDay(gbPerDay) {
+  const value = Number(gbPerDay || 0)
+  if (value > 0 && value < 0.1) return `${Math.max(Math.round(value * 1024), 1)} MB/天`
+  return `${value.toFixed(1)} GB/天`
 }

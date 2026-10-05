@@ -52,10 +52,8 @@ from .download_health import (
 )
 from .v9 import TaskConfigV9, migrate_task_rows_v9
 from .presentation import build_health_summary, deletion_quota_message
-from .sites import normalize_domain, resolve_rule, resolve_stats_parser
-from .sites import exoticaz as _site_exoticaz  # noqa: F401  导入即注册站点 H&R 规则与统计解析器
-from .sites.exoticaz import torrent_id_from_path
-from .sites.exoticaz_ledger import RequestThrottle, parse_history_ledger
+from .hr_strategy import (RequestThrottle, normalize_domain, parse_history_ledger,
+                          resolve_rule, resolve_stats_parser, torrent_id_from_path)  # noqa: F401  导入即注册站点 H&R 规则与统计解析器
 from .repository import TaskRepository
 from .health_service import DownloadHealthService
 from .operations import OperationError, TaskService
@@ -316,6 +314,8 @@ class BrushTaskConfig:
         self.rules_seed_avgspeed_kbps = self._parse_number(config.get("delete_rules_seed_avgspeed_kbps"))
         self.rules_inactive_time_hours = self._parse_number(config.get("delete_rules_inactive_time_hours"))
         self.rules_buffer_hours = self._parse_number(config.get("delete_rules_buffer_hours"))
+        self.smart_release_ratio = self._parse_number(config.get("delete_smart_release_ratio"))
+        self.smart_release_hours = self._parse_number(config.get("delete_smart_release_hours"))
         self.hr_clear_ratio_override = self._parse_number(config.get("delete_hr_clear_ratio_override"))
         self.rss_support = bool(config.get("rss_support", False))
         self.tag = self._clean_text(config.get("tag"))
@@ -1550,8 +1550,8 @@ class BrushFlow(_PluginBase):
         finally:
             report["finished_at"] = self._now_iso()
             self._append_run(task_id, report)
-            if report.get("added_count"):
-                self._refresh_scheduler()
+            # 服务列表只随任务增删改变化（各自路径已显式刷新调度）；
+            # 选种加种子不改服务清单，此处重建只会重置调度计时并打断在跑检查（9.6.5 移除）。
         return result
 
     def _is_task_busy(self, task_id: str) -> bool:
@@ -1794,15 +1794,34 @@ class BrushFlow(_PluginBase):
         now = time.time()
         if now - float(cache.get("at") or 0) < _SITE_LEDGER_TTL:
             return
-        stats = (self._site_user_stats_cache.get(domain) or {}).get("data")
-        username = getattr(stats, "username", None)
+
+        def _username_from_mp_row() -> Optional[str]:
+            """MP 用户数据（userdata 插件/公共解析器）里的用户名——零请求，最优先。
+
+            注意：_ensure_site_user_stats 在 MP 已有用户数据时会短路探活并清空
+            探活缓存（cache["data"]=None），因此账本同步不能只依赖探活缓存，
+            否则装了 userdata 插件的用户反而永远拿不到用户名（9.5.6 实机修复）。
+            """
+            row = self._latest_site_user_data_by_domain().get(domain)
+            value = row.get("username") if isinstance(row, dict) else getattr(row, "username", None)
+            return str(value) if value else None
+
+        def _username_from_probe_cache() -> Optional[str]:
+            stats = (self._site_user_stats_cache.get(domain) or {}).get("data")
+            value = getattr(stats, "username", None)
+            return str(value) if value else None
+
+        username = _username_from_mp_row() or _username_from_probe_cache()
         if not username:
             self._ensure_site_user_stats(task, site, force=True)
-            stats = (self._site_user_stats_cache.get(domain) or {}).get("data")
-            username = getattr(stats, "username", None)
+            username = _username_from_probe_cache() or _username_from_mp_row()
         if not username:
             cache["at"] = now
-            logger.warning(f"站点 [{getattr(site, 'name', domain)}] 未获取到用户名，本轮跳过 H&R 账本同步")
+            mp_row_missing = self._latest_site_user_data_by_domain().get(domain) is None
+            hint = ("MP 用户数据缺少用户名字段，且探活未获得用户名"
+                    if not mp_row_missing else
+                    "MP 无用户数据且探活未成功（请检查站点 Cookie 是否有效）")
+            logger.warning(f"站点 [{getattr(site, 'name', domain)}] {hint}，本轮跳过 H&R 账本同步")
             return
         base_url = str(getattr(site, "domain", "") or "").strip()
         if not base_url.startswith("http"):
@@ -2187,12 +2206,32 @@ class BrushFlow(_PluginBase):
             }
         elif eligible_count and any(
             code in deletion_reason_codes
-            for code in ("byte_cap", "daily_count_cap", "run_count_cap")
+            for code in ("byte_cap", "daily_byte_cap", "run_byte_cap",
+                         "candidate_exceeds_remaining_bytes", "daily_count_cap", "run_count_cap")
         ):
             quota_message = deletion_quota_message(deletion_reason_codes)
             readiness = {
                 "state": "quota",
                 "message": f"已有低价值候选，但{quota_message}；策略会在额度恢复后继续处理。",
+                "candidate_count": eligible_count,
+                "candidate_bytes": eligible_bytes,
+            }
+        elif eligible_count and "no_pressure" in deletion_reason_codes:
+            # 容量未达触发线的精确文案（9.7.3）：替代泛化的"等待确认或额度"，
+            # 避免用户把保守延保的正常等待误判为删种故障。
+            current_percent = round(current_size / capacity * 100, 1) if capacity else 0.0
+            trigger_percent = float(task.smart_capacity_trigger_percent or 90)
+            release_hint = ""
+            if task.delete_engine == "hr_policy":
+                release_hint = "；可开启\"豁免即释放\"跳过等待"
+            elif task.delete_engine == "rules":
+                release_hint = "；可开启\"达标即释放\"跳过等待"
+            readiness = {
+                "state": "no_pressure",
+                "message": (
+                    f"已有 {eligible_count} 个达标候选；容量 {current_percent}% 低于触发线 "
+                    f"{trigger_percent:.0f}%，按保守延保暂不删种{release_hint}。"
+                ),
                 "candidate_count": eligible_count,
                 "candidate_bytes": eligible_bytes,
             }
@@ -2496,7 +2535,13 @@ class BrushFlow(_PluginBase):
         torrents = eligible_torrents
 
         selection_limit = None
-        if task.smart_selection_enabled or task.smart_enabled:
+        # 选种是否走智能评分，只由"启用智能选种"开关决定；删种开关/引擎与本决策无关
+        # （旧条件 or task.smart_enabled 会让任何开了自动删种的任务被强制评分，
+        #   9.6.6 修复：关闭智能选种后回归纯硬过滤 + 发布时间倒序）。
+        # 9.6.7：RSS 源强制硬过滤——TorrentsChain 构造的候选只带标题/链接/大小/时间，
+        # seeders/leechers 兜底为 0（会被评分当"满分稀缺/无需求"的假数据）、免费标记缺失，
+        # 评分在此源下无米下锅，与向导互斥开关（置灰）形成双保险。
+        if task.smart_selection_enabled and not task.rss_support:
             ratio_current = (ratio_status or {}).get("current")
             ratio_target = (ratio_status or {}).get("target") or task.site_ratio_target or 2.0
             capacity_limit = float(task.disksize or 0) * 1024**3
@@ -2615,7 +2660,14 @@ class BrushFlow(_PluginBase):
             )
             torrents = [item.candidate for item in ranked_candidates]
         else:
+            # 纯硬过滤路径同样受"每轮最多新增"约束，避免一轮无限加种
+            selection_limit = int(task.smart_selection_max_add_per_run or 5)
             torrents.sort(key=lambda item: item.pubdate or "", reverse=True)
+            if task.smart_selection_enabled and task.rss_support:
+                logger.info(
+                    f"刷流任务 [{task.name}] RSS 来源不携带免费/做种/下载数据，"
+                    "本轮自动按硬过滤 + 时序取种（智能评分仅在站点列表页来源下可用）"
+                )
         seeding_size = self.__calculate_seeding_torrents_size(torrent_tasks)
         for torrent in torrents:
             passed, reason = self.__evaluate_pre_conditions_for_brush(include_network_conditions=False)
@@ -3196,6 +3248,8 @@ class BrushFlow(_PluginBase):
             "excluded_tag": "命中删除排除标签",
             "low_retention_value": "长期低需求、低上传或资源不稀缺",
             "low_value_unconfirmed": "低价值信号尚未连续确认",
+            "smart_release_ratio": "分享率已达赦免线，任务完成",
+            "smart_release_hours": "做种时长已达赦免线，任务完成",
             "valuable_seed": "存在上传需求或资源稀缺，继续保留",
             "no_low_value_candidate": "没有通过安全线和连续确认的低价值候选",
             "byte_cap": "删除容量配额已用尽",
@@ -3239,6 +3293,8 @@ class BrushFlow(_PluginBase):
             max_delete_gb_per_run=float(task.smart_max_delete_gb_per_run or 0),
             max_delete_gb_per_day=float(task.smart_max_delete_gb_per_day or 0),
             excluded_tags=excluded_tags,
+            smart_release_ratio=float(task.smart_release_ratio or 0),
+            smart_release_hours=float(task.smart_release_hours or 0),
         )
 
 

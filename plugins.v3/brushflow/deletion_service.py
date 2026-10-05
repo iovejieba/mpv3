@@ -21,8 +21,7 @@ from .decision import (
 from .downloaders import DownloaderUnavailable
 from .learning import feature_key, learning_summary, predict_yield, recent_yield_metrics, update_learning_state
 from .operations import OperationError, TaskService, UNRESOLVED_ITEMS
-from .sites import SiteHRRule
-from .sites.exoticaz import torrent_id_from_path
+from .hr_strategy import SiteHRRule, torrent_id_from_path
 
 
 GIB = 1024**3
@@ -43,6 +42,7 @@ def policy_for_document(document) -> SmartPolicy:
         profile=document.strategy.profile, min_seed_time_hours=document.deletion.min_seed_hours or 0,
         smart_cold_inactive_minutes=overrides.cold_protection_minutes,
         demand_confirmations=overrides.demand_confirmations,
+        protect_active_demand=overrides.protect_active_demand,
         low_value_confirmations=overrides.candidate_confirmations,
         low_value_span_minutes=overrides.confirmation_minutes,
         score_threshold=overrides.deletion_score_threshold,
@@ -65,6 +65,11 @@ def policy_for_document(document) -> SmartPolicy:
         rules_download_time_hours=float(document.deletion.rules_download_time_hours or 0),
         rules_seed_avgspeed_kbps=float(document.deletion.rules_seed_avgspeed_kbps or 0),
         rules_inactive_time_hours=float(document.deletion.rules_inactive_time_hours or 0),
+        smart_release_ratio=float(document.deletion.smart_release_ratio or 0),
+        smart_release_hours=float(document.deletion.smart_release_hours or 0),
+        # 达标即释放仅对确定性引擎生效；smart 的容量等待是其核心语义
+        release_on_maturity=bool(document.deletion.release_on_maturity)
+        and document.deletion.engine in {"rules", "hr_policy"},
     )
 
 
@@ -168,7 +173,11 @@ class DeletionService:
             info = deepcopy(snapshot[torrent_hash])
             history = sorted(history_by_hash[torrent_hash], key=lambda row: number(row.get("at")), reverse=True)
             previous = history[0] if history else {}
-            raw_hr = bool(record.get("hit_and_run") or self.document.selection.site_hr_active)
+            # 全站 H&R 策略站点：每个种子默认都是 H&R，由策略层逐种豁免裁决
+            # （豁免 → 清标记放行；未豁免 → 维持保护）。不依赖选种任务的
+            # "标记站点HR"勾选——漏勾会使策略层不运行、未豁免种子绕过保护。
+            raw_hr = bool(record.get("hit_and_run") or self.document.selection.site_hr_active
+                          or self.hr_policy is not None)
             info.update({"title": record.get("title") or info.get("title"), "size": info.get("total_size"),
                          "hit_and_run": raw_hr,
                          "torrent_id": torrent_id_from_path(str(record.get("page_url") or "")),
@@ -438,14 +447,24 @@ class DeletionService:
                     reasons.append("previous_request_unconfirmed")
                 if observation and observation["management_tag_removed"]:
                     reasons.append("management_tag_removed")
-                if not invalid and not latest["recovery"]["active"]:
+                if not invalid and not latest["recovery"]["active"] and not self.policy.release_on_maturity:
                     reasons.append("capacity_target_reached")
                 budget = latest["budget"]
+                # 大种子放行（9.7.4）：单轮字节配额与选择阶段同规则抬升到本轮最大
+                # 候选体积——配额管数量不管尺寸，节奏由每日额度独立兜底。
+                largest_item = max(
+                    (number(row.get("size")) for row in items),
+                    default=0.0,
+                )
+                effective_run_byte_cap = (
+                    max(number(budget.get("run_byte_cap")), largest_item)
+                    if number(budget.get("run_byte_cap")) > 0 else 0.0
+                )
                 if submitted_count >= budget["run_count_cap"]:
                     reasons.append("run_count_cap")
                 if budget["remaining_daily_count"] < 1:
                     reasons.append("daily_count_cap")
-                if budget["run_byte_cap"] and item["size"] + submitted_bytes > budget["run_byte_cap"]:
+                if effective_run_byte_cap > 0 and item["size"] + submitted_bytes > effective_run_byte_cap:
                     reasons.append("run_byte_cap")
                 if budget["daily_byte_cap"] and item["size"] > budget["remaining_daily_bytes"]:
                     reasons.append("daily_byte_cap")
@@ -552,12 +571,12 @@ class DeletionService:
         self.write("smart_history", [row for rows in per_hash.values() for row in rows[-max(12, self.policy.low_value_confirmations):]])
         observations = [{**plan["records"].get(row["hash"], {}), **row,
                          "feature_key": feature_key(plan["records"].get(row["hash"], {}))} for row in plan["observations"]]
-        # 学习采样仅属于 smart 引擎；rules/hr_policy 模式不产生学习样本
-        if self.policy.rules_mode is None:
-            learning = update_learning_state(self.read("learning_state", {}), observations, now=now)
-            self.write("learning_state", learning)
-        else:
-            learning = self.read("learning_state", {})
+        # 快照（上传观测）对全部引擎写入——任务卡"上传 GB/天"等指标依赖它；
+        # 学习特征（EWMA 收益/置信度）仅属于 smart 引擎，rules/hr_policy 只留快照不推进。
+        learning = update_learning_state(
+            self.read("learning_state", {}), observations, now=now,
+            update_features=self.policy.rules_mode is None)
+        self.write("learning_state", learning)
         self.write("capacity_recovery", plan["recovery"])
         evaluated_rows = []
         observation_map = {row["hash"]: row for row in plan["observations"]}

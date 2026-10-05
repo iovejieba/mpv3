@@ -102,6 +102,13 @@ class DeletionConfig(BaseModel):
     rules_inactive_time_hours: Optional[float] = Field(None, gt=0)
     rules_buffer_hours: Optional[float] = Field(None, ge=0)
     hr_clear_ratio_override: Optional[float] = Field(None, ge=0)
+    # smart 赦免线：单种分享率/做种时长达标即视为任务完成；0 或 None = 不启用
+    smart_release_ratio: Optional[float] = Field(None, ge=0)
+    smart_release_hours: Optional[float] = Field(None, ge=0)
+    # 达标即释放（9.7.0）：rules/hr_policy 引擎下，满足规则/豁免的种子在下一轮
+    # 检查即删除，不等容量压力；默认关闭 = 保守延保（等容量压力再删）。
+    # smart 引擎不受此开关影响（容量等待是其核心语义）。
+    release_on_maturity: bool = False
     paused: bool = False
     observation_started_at: Optional[float] = None
     observation_until: Optional[float] = None
@@ -142,6 +149,8 @@ class StrategyOverrides(BaseModel):
     max_release_gb_day: Optional[float] = Field(None, gt=0)
     cold_protection_minutes: float = Field(360, ge=0)
     demand_confirmations: int = Field(2, ge=1, le=3)
+    # 挂账需求保护总开关：站点仍有未完成下载者时拒绝删种；事实硬线（活跃连接/真实上传）不受此开关影响
+    protect_active_demand: bool = True
 
     @model_validator(mode="after")
     def validate_capacity_loop(self):
@@ -290,6 +299,9 @@ class TaskConfigV9(BaseModel):
             "delete_rules_inactive_time_hours": self.deletion.rules_inactive_time_hours,
             "delete_rules_buffer_hours": self.deletion.rules_buffer_hours,
             "delete_hr_clear_ratio_override": self.deletion.hr_clear_ratio_override,
+            "delete_smart_release_ratio": self.deletion.smart_release_ratio,
+            "delete_smart_release_hours": self.deletion.smart_release_hours,
+            "delete_release_on_maturity": self.deletion.release_on_maturity,
             "auto_archive_days": self.deletion.auto_archive_days,
             "delete_except_tags": self.deletion.exclude_tags,
             "delete_files": self.deletion.delete_data,
@@ -312,6 +324,7 @@ class TaskConfigV9(BaseModel):
             "smart_max_delete_gb_per_day": override.max_release_gb_day,
             "smart_cold_inactive_minutes": override.cold_protection_minutes,
             "smart_demand_confirmations": override.demand_confirmations,
+            "smart_protect_active_demand": override.protect_active_demand,
             "del_no_free": False,
         }
 

@@ -1,48 +1,45 @@
 # -*- coding: utf-8 -*-
-"""
-ExoticaZ 用户面板数据解析（纯逻辑，无宿主依赖）
+"""站点 H&R 策略层 + 用户面板解析（平铺单文件，消除子包结构）。
 
-来源：MP 侧 userdata 插件的 userdata_parser.py（用户提供的可复用资产，逐行收编），
-仅两处适配：
-  1. parse_history_ledger 额外提取 torrent_id（行内 /torrent/{id} 链接），
-     供刷流插件按种子 ID 对齐本地任务记录；
-  2. 做种窗口注释同步为最新合同：W = 96 小时（4 天），锚点 = 下载完成时刻
-     （见 exoticaz-python-reference/刷流插件对接说明.md §2.3）。
-
-页面锚点均以 ../exoticaz-python-reference/samples/ 净化样本钉死:
-  - ratio-bar: 任意登录页顶部, 用户名/实时统计(上传/下载/分享率/魔力/做种/下载数)
-  - /profile/{username}: 信息表 Rank / Joined 行
-  - /profile/{username}/active: 做种列表(表头自适应探测 size/seeders 列, 分页)
-  - /profile/{username}/history?hnr=1: 站点官方 H&R 观察名单(未达标含已记账)
-
-请求纪律: 全站 <= 1 rps; 403 + cloudflare 特征 = 过盾提示, 不当 Cookie 失效重试。
+合并自原 sites/__init__.py + sites/exoticaz.py + sites/exoticaz_ledger.py。
+设计依据：ExoticaZ-HR适配参考 + MPV3交叉验证说明 + 刷流插件对接说明。
+对拍基线：hr_conformance_vectors.json（56ADE6A0）。
 """
 from __future__ import annotations
 
 import math
 import re
-import time
 import threading
+import time
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlparse, urlsplit
 
 from lxml import etree
 
-MIN_REQUEST_INTERVAL = 1.0  # 秒, 站点请求纪律 <= 1 rps
+# ================================================================ 常量
 
+GIB = 1 << 30
+MIN_REQUEST_INTERVAL = 1.0  # 站点请求纪律 ≤1 rps
 EXOTICAZ_DOMAIN_SUFFIX = "exoticaz.to"
 
-_SIZE_RE = re.compile(r"(?i)^([\d.,]+)\s*([KMGTP])i?B")
-_NUM_RE = re.compile(r"[\d.,]+")
-_CF_MARKERS = ("cloudflare", "just a moment")
+# ================================================================ 域名归一化
+
+
+def normalize_domain(url: Optional[str]) -> str:
+    """从 URL 或裸域名提取规范化域名（小写、去 www 前缀）；无法解析返回空串。"""
+    if not url:
+        return ""
+    text = str(url).strip().lower()
+    if "://" in text:
+        text = urlparse(text).netloc
+    if text.startswith("www."):
+        text = text[4:]
+    return text.split("/")[0].split(":")[0]
 
 
 def is_exoticaz(url: str) -> bool:
-    """域名闸门: 仅接管 exoticaz.to(含子域), 其余站点一律交回宿主内置逻辑。"""
-    try:
-        netloc = urlsplit(str(url or "")).netloc.lower().split(":")[0]
-    except ValueError:
-        return False
+    netloc = urlsplit(str(url or "")).netloc.lower().split(":")[0]
     return netloc == EXOTICAZ_DOMAIN_SUFFIX or netloc.endswith("." + EXOTICAZ_DOMAIN_SUFFIX)
 
 
@@ -51,12 +48,108 @@ def base_url_of(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else str(url or "").rstrip("/")
 
 
+# ================================================================ SiteHRRule 策略对象
+
+
+@dataclass(frozen=True)
+class SiteHRRule:
+    """全站 H&R 站点的删种保护规则。
+
+    豁免语义与站点官方规则对齐，方向是"只多保、不早放"：
+    做种时长 >= required_hours(体积)，或该种 ratio(上传/体积) >= clear_ratio。
+    任何关键数据缺失都视为未豁免（fail-closed），维持 9.1 硬保护。
+
+    window_hours：做种窗口——要求时长必须在下载完成后 W 小时内达成
+    （ExoticaZ 实证 W=96h，锚点=完成时刻，离线消耗窗口但不计做种时长，
+    到期未达标即使做种中也记账）。
+    """
+
+    domain: str
+    required_hours: Callable[[float], int]
+    default_clear_ratio: float
+    min_clear_ratio: float
+    window_hours: float = 96.0
+
+    def clear_ratio(self, override: Optional[float] = None) -> float:
+        """合并配置覆盖；低于站点规则下限的配置一律按更保守值处理。"""
+        if override is None:
+            return self.default_clear_ratio
+        value = float(override)
+        if value <= 0:
+            return 0.0
+        return max(value, self.min_clear_ratio)
+
+    def required_seed_hours(self, size_bytes: float) -> int:
+        """按体积（字节）返回所需做种小时；体积非法时按站点下限兜底。"""
+        if size_bytes is None or float(size_bytes) <= 0:
+            return self.required_hours(0)
+        return self.required_hours(float(size_bytes) / GIB)
+
+    def exempt(
+        self,
+        *,
+        size_bytes: float,
+        seeded_hours: float,
+        uploaded_bytes: float,
+        clear_ratio_override: Optional[float] = None,
+    ) -> bool:
+        """判定该种是否已解除 H&R；数据缺失或非法时返回 False（fail-closed）。"""
+        try:
+            size = float(size_bytes)
+            hours = float(seeded_hours)
+            uploaded = float(uploaded_bytes)
+        except (TypeError, ValueError):
+            return False
+        if size <= 0 or hours < 0 or uploaded < 0:
+            return False
+        ratio = uploaded / size
+        threshold = self.clear_ratio(clear_ratio_override)
+        return hours >= self.required_seed_hours(size) or (threshold > 0 and ratio >= threshold)
+
+
+REGISTRY: Dict[str, SiteHRRule] = {}
+
+# 站点用户统计解析器（domain → callable(html) -> Optional[dict]）
+STATS_PARSERS: Dict[str, Callable] = {}
+
+
+def register_rule(rule: SiteHRRule) -> SiteHRRule:
+    REGISTRY[rule.domain.strip().lower()] = rule
+    return rule
+
+
+def register_stats_parser(domain: str, parser: Callable) -> Callable:
+    STATS_PARSERS[str(domain).strip().lower()] = parser
+    return parser
+
+
+def resolve_rule(domain: Optional[str]) -> Optional[SiteHRRule]:
+    if not domain:
+        return None
+    return REGISTRY.get(normalize_domain(domain))
+
+
+def resolve_stats_parser(domain: Optional[str]) -> Optional[Callable]:
+    if not domain:
+        return None
+    return STATS_PARSERS.get(normalize_domain(domain))
+
+
+# ================================================================ 文本解析（参考实现对齐）
+
+
 def norm_space(text: str) -> str:
+    """空白归一化（站点 HTML 词间常有换行，匹配前必须先做）。"""
     return " ".join(str(text or "").split())
 
 
-def _parse_size_bytes(text: str) -> int:
-    """1024 进制(GiB), 行首锚定。"""
+_SIZE_RE = re.compile(r"(?i)^([\d.,]+)\s*([KMGTP])i?B")
+_NUM_RE = re.compile(r"[\d.,]+")
+_TORRENT_ID_RE = re.compile(r"(?:/torrent/|^)(\d+)")
+
+
+def parse_size_bytes(text: str) -> int:
+    """1024 进制（GB=GiB），行首锚定。"""
     m = _SIZE_RE.match(norm_space(text))
     if not m:
         return 0
@@ -65,13 +158,8 @@ def _parse_size_bytes(text: str) -> int:
     return int(value * mult)
 
 
-def _parse_number(text: str) -> float:
-    """提取首个数字（含千分位）。
-
-    2026-09-30 实机修复：站点做种列表的做种数单元格会渲染 "..." 占位符
-    （懒加载/隐藏数据），_NUM_RE 的字符类含点号会命中 "..."，float("...")
-    抛 ValueError 炸掉整个采集。文本不含数字时一律返回 0.0。
-    """
+def parse_number(text: str) -> float:
+    """提取首个数字（含千分位逗号）；无数字返回 0.0（含 "..." 占位符守卫）。"""
     cleaned = norm_space(text)
     if not re.search(r"\d", cleaned):
         return 0.0
@@ -79,23 +167,73 @@ def _parse_number(text: str) -> float:
     return float(m.group(0).replace(",", "")) if m else 0.0
 
 
-class RequestThrottle:
-    """简单节流器: 相邻请求间隔 >= MIN_REQUEST_INTERVAL。"""
-
-    def __init__(self, min_interval: float = MIN_REQUEST_INTERVAL):
-        self._min_interval = min_interval
-        self._last = 0.0
-        self._lock = threading.Lock()
-
-    def wait(self) -> None:
-        with self._lock:
-            delta = time.time() - self._last
-            if delta < self._min_interval:
-                time.sleep(self._min_interval - delta)
-            self._last = time.time()
+# 兼容别名：账本/采集实现内部原以 _parse_number 引用（含 "..." 守卫）。
+_parse_number = parse_number
 
 
-# ---------------------------------------------------------------- 页面解析
+def torrent_id_from_path(text: str) -> str:
+    """/torrent/196268 → "196268"。"""
+    m = _TORRENT_ID_RE.search(str(text or "").strip())
+    return m.group(1) if m else ""
+
+
+def validate_torrent_payload(data: bytes) -> bool:
+    """bittorrent 文件以 bencode dict 'd' 开头；HTML 说明登录态失效。"""
+    return bool(data) and data[:1] == b"d"
+
+
+# ================================================================ ExoticaZ H&R 公式与站点注册
+
+
+def hr_seed_hours(size_gib: float) -> int:
+    """官方 H&R 公式：x 为体积（GiB），返回所需做种小时（先 max 后 ceil）。
+
+    f(x) = 72 + 2x               , x < 50
+    f(x) = 100·ln(x) − 219.2023  , x ≥ 50
+    两段在 50GB 处近似连续（100·ln50−219.2023 = 172.00000054…，ceil 后为 173）；
+    分支条件必须 x < 50（右支含 50）；体积未知按站点最低 72h 兜底。
+    """
+    if size_gib is None or size_gib <= 0:
+        return 72
+    hours = 72 + 2 * size_gib if size_gib < 50 else 100 * math.log(size_gib) - 219.2023
+    return math.ceil(max(hours, 72))
+
+
+def is_hr_cleared(size_gib: float, seeded_hours: float, ratio: float,
+                  clear_ratio: float = 0.9) -> bool:
+    """豁免判定（参考实现对齐版）：做种满公式时长 或 分享率 >= 豁免线，任一达标。"""
+    return seeded_hours >= hr_seed_hours(size_gib) or (clear_ratio > 0 and ratio >= clear_ratio)
+
+
+SITE_DOMAIN = "exoticaz.to"
+SITE_MIN_CLEAR_RATIO = 0.9
+SITE_DEFAULT_CLEAR_RATIO = 1.0
+
+
+def _make_exoticaz_rule() -> SiteHRRule:
+    return SiteHRRule(
+        domain=SITE_DOMAIN,
+        required_hours=hr_seed_hours,
+        default_clear_ratio=SITE_DEFAULT_CLEAR_RATIO,
+        min_clear_ratio=SITE_MIN_CLEAR_RATIO,
+        window_hours=96.0,
+    )
+
+
+register_rule(_make_exoticaz_rule())
+
+
+# ================================================================ 用户面板解析（lxml，收编自 userdata_parser）
+
+
+def _tooltip_text(el) -> str:
+    """取 tooltip 文本：兼容服务端原始 HTML(title) 与浏览器另存 DOM
+    (Bootstrap 初始化后把 title 搬进 data-original-title / data-bs-original-title)。"""
+    return (el.get("data-original-title")
+            or el.get("data-bs-original-title")
+            or el.get("title")
+            or "")
+
 
 def parse_ratio_bar(html_text: str) -> Optional[Dict[str, Any]]:
     """解析任意登录页顶部 .ratio-bar。返回 None 表示未登录(页面缺少 ratio-bar)。"""
@@ -108,20 +246,17 @@ def parse_ratio_bar(html_text: str) -> Optional[Dict[str, Any]]:
     bar = bars[0]
     text = norm_space(bar.xpath("string(.)"))
     out: Dict[str, Any] = {}
-
     links = bar.xpath(".//a[contains(@href, '/profile/')]")
     if links:
         out["username"] = norm_space(links[0].xpath("string(.)"))
-
     for key, title in (("upload", "Upload"), ("download", "Download"), ("ratio", "Ratio")):
         nodes = bar.xpath(f".//div[@title='{title}']")
         if nodes:
             value = norm_space(nodes[0].xpath("string(.)"))
-            out[key] = _parse_number(value) if key == "ratio" else _parse_size_bytes(value)
-
+            out[key] = parse_number(value) if key == "ratio" else parse_size_bytes(value)
     bonus = re.search(r"Bonus:\s*([\d.,]+)", text)
     if bonus:
-        out["bonus"] = _parse_number(bonus.group(1))
+        out["bonus"] = parse_number(bonus.group(1))
     seeding = re.search(r"Seeding:\s*(\d+)", text)
     if seeding:
         out["seeding"] = int(seeding.group(1))
@@ -149,7 +284,6 @@ def parse_profile(html_text: str) -> Dict[str, Any]:
         if label == "Rank" and value:
             out["user_level"] = value
         elif label == "Joined" and value:
-            # "25 Mar 2023 11:57 am (3 years ago)" -> 去掉括号相对时间
             out["join_at"] = norm_space(value.split("(")[0])
     return out
 
@@ -169,28 +303,24 @@ def parse_active_page(html_text: str) -> Tuple[int, int, List[Tuple[int, int]], 
     html = etree.HTML(html_text or "")
     if html is None or len(html) == 0:
         return 0, 0, [], None
-
     size_col, seeders_col = 9, 2
     if html.xpath('//thead//th[contains(@class,"size")]'):
         size_col = len(html.xpath('//thead//th[contains(@class,"size")][1]/preceding-sibling::th')) + 1
     if html.xpath('//thead//th[contains(@class,"seeders")]'):
         seeders_col = len(html.xpath('//thead//th[contains(@class,"seeders")][1]/preceding-sibling::th')) + 1
-
     total, info, count = 0, [], 0
     for tr in html.xpath("//tr"):
         cells = tr.xpath("./td")
         if len(cells) < max(size_col, seeders_col):
-            continue  # 空状态行（colspan）/列不足行
-        size = _parse_size_bytes(cells[size_col - 1].xpath("string(.)"))
-        seed = int(_parse_number(cells[seeders_col - 1].xpath("string(.)")))
+            continue
+        size = parse_size_bytes(cells[size_col - 1].xpath("string(.)"))
+        seed = int(parse_number(cells[seeders_col - 1].xpath("string(.)")))
         if size <= 0 and seed <= 0:
-            continue  # 非数据行（"..." 占位且无体积等）
+            continue
         count += 1
         total += size
         info.append((seed, size))
-
     next_page = None
-    # 取 active 之后第一个数字页码(官方实现要求后续项 >=2 才翻页, 会漏抓最后一页)
     pages = html.xpath('//ul[@class="pagination"]/li[contains(@class,"active")]/following-sibling::li')
     for li in pages:
         num = norm_space(li.xpath("string(.)"))
@@ -200,7 +330,21 @@ def parse_active_page(html_text: str) -> Tuple[int, int, List[Tuple[int, int]], 
     return count, total, info, next_page
 
 
-# ---------------------------------------------------------------- 编排
+class RequestThrottle:
+    """简单节流器: 相邻请求间隔 >= MIN_REQUEST_INTERVAL。"""
+
+    def __init__(self, min_interval: float = MIN_REQUEST_INTERVAL):
+        self._min_interval = min_interval
+        self._last = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        with self._lock:
+            delta = time.time() - self._last
+            if delta < self._min_interval:
+                time.sleep(self._min_interval - delta)
+            self._last = time.time()
+
 
 def collect_user_data(fetch: Callable[..., Optional[Any]],
                       base_url: str,
@@ -222,23 +366,21 @@ def collect_user_data(fetch: Callable[..., Optional[Any]],
             return None, ""
         return getattr(resp, "status_code", None), getattr(resp, "text", "") or ""
 
-    # 1. 登录态 + ratio-bar(基础信息与流量信息同源, 一次请求双用)
     status, home_html = get("/")
     if status is None:
         result["err_msg"] = "网络请求失败，无法连接站点"
         return result
     body = (home_html or "").lower()
-    if status in (401, 403) and any(m in body for m in _CF_MARKERS):
+    if status in (401, 403) and any(m in body for m in ("cloudflare", "just a moment")):
         result["err_msg"] = "已被 Cloudflare 拦截，请人工过盾后再刷新"
         return result
     bar = parse_ratio_bar(home_html)
     if bar is None or not bar.get("username"):
         result["err_msg"] = "登录态失效：页面缺少 ratio-bar，请检查 Cookie 是否有效"
         return result
-
     result.update({
         "username": bar.get("username"),
-        "userid": bar.get("username"),  # exoticaz 无数字 ID，用户名即唯一标识
+        "userid": bar.get("username"),
         "user_level": bar.get("user_level") or "",
         "join_at": "",
         "bonus": float(bar.get("bonus") or 0.0),
@@ -250,24 +392,19 @@ def collect_user_data(fetch: Callable[..., Optional[Any]],
         "seeding_size": 0,
         "seeding_info": [],
     })
-
-    # 2. 个人资料页: Rank/Joined(失败不致命)
     username = result["username"]
     _, profile_html = get(f"/profile/{username}")
     profile = parse_profile(profile_html)
     if profile.get("user_level") and not result["user_level"]:
         result["user_level"] = profile["user_level"]
     result["join_at"] = profile.get("join_at", "")
-
-    # 3. 做种列表: 累计做种体积与逐种信息(失败不致命, 做种数以 ratio-bar 为准)
-    #    DESIGN.md §7 预案的降级：做种页结构异常/解析失败 → 只报 ratio-bar 的做种数，
-    #    seeding_size 缺省 0，绝不让本段异常炸掉整个采集（2026-09-30 实机教训）。
     page = 1
-    while page <= 50:  # 翻页上限保护
+    while page <= 50:
         _, active_html = get(f"/profile/{username}/active?perPage=100&page={page}")
         try:
             _, total, info, next_num = parse_active_page(active_html)
-        except Exception:
+        except Exception:  # 做种段异常只降级（DESIGN.md §7），不炸整个采集
+            result["seeding_degraded"] = True
             break
         result["seeding_size"] = int(result.get("seeding_size") or 0) + total
         result["seeding_info"] = list(result.get("seeding_info") or []) + info
@@ -279,7 +416,7 @@ def collect_user_data(fetch: Callable[..., Optional[Any]],
 
 # ---------------------------------------------------------------- H&R 账本(history 页)
 
-# 站点规则（合同以 exoticaz-python-reference/刷流插件对接说明.md §2.3 为准，2026-09-30 实证）:
+# 站点规则（合同以 刷流插件对接说明.md §2.3 为准，2026-09-30 实证）:
 #   要求 = ceil(max(f(size), 72))，f 同参考实现 —— 与 _hr_required_hours 一致;
 #   做种窗口: 要求须在下载完成后 W = 96 小时（4 天）内达成，锚点 = 完成时刻
 #   （不是添加时刻）；站点按小时 cron 巡检（≤1h 粒度），窗口到期未达标 ->
@@ -287,23 +424,16 @@ def collect_user_data(fetch: Callable[..., Optional[Any]],
 #   connected, but past its seeding window. Keep seeding, X left"）——二开差异点；
 #   离线消耗窗口预算但不计入做种时长（实测漂移 ≈6h：离线 ~5h + announce 结算滞后 ~1h）；
 #   做种中未到期 -> "Hit & Run not fulfilled but not counted for actively seeded torrent";
-#   hnr=1 过滤视图 = 未达标观察名单（含已记账），不是"已命中"历史；
-#   已记账可自愈：继续做种到倒计时归零自动移出名单；BP 清除 = round(10 × 剩余要求小时)；
+#   hnr=1 过滤视图 = 未达标观察名单（含已记账行），不是"已命中"历史;
+#   已记账可自愈：继续做种到倒计时归零自动移出名单；BP 清除 = round(10 × 剩余要求小时);
 #   倒计时按 announce 结算（announce 之间冻结），删种决定前应 force re-announce。
-
-def _tooltip_text(el) -> str:
-    """取 tooltip 文本: 兼容服务端原始 HTML(title) 与浏览器另存 DOM
-    (Bootstrap 初始化后把 title 搬进 data-original-title / data-bs-original-title)。"""
-    return (el.get("data-original-title")
-            or el.get("data-bs-original-title")
-            or el.get("title")
-            or "")
 
 
 def parse_history_ledger(html_text: str) -> List[Dict[str, Any]]:
     """解析 /profile/{username}/history 账本页, 逐种返回服务器侧 H&R 状态。
 
     每行 dict 字段:
+      torrent_id                                   种子 ID（从 /torrent/{id} 链接提取）
       title/size_bytes/seeders/leechers/completed  种子与文件信息
       uploaded/downloaded/ratio                    本种内你的上传/下载(字节)/分享率
       download_credited                            下载是否被记账豁免(Credited Download 徽标)
@@ -314,7 +444,6 @@ def parse_history_ledger(html_text: str) -> List[Dict[str, Any]]:
                                                    | 'counted'(已记账, 窗口期已过)
       hr_remaining_hours                           剩余要求时长(站点倒计时原文, 分钟精度)
       hr_clear_bp                                  花魔力清除的标价(仅 counted 态, 无则 None)
-    列序依据 2026-09 页面结构; H&R 状态以单元格内 tooltip 原文判定。
     """
     html = etree.HTML(html_text or "")
     if html is None:
@@ -332,40 +461,33 @@ def parse_history_ledger(html_text: str) -> List[Dict[str, Any]]:
             "seed_hours": None, "seed_display": "",
             "hr_state": "none", "hr_remaining_hours": None, "hr_clear_bp": None,
         }
-
         file_cell = cells[1]
         row["title"] = norm_space(file_cell.xpath("string(.//a[contains(@href,'/torrent/')][1])"))
         torrent_link = file_cell.xpath(".//a[contains(@href,'/torrent/')][1]/@href")
         if torrent_link:
             m_id = re.search(r"/torrent/(\d+)", str(torrent_link[0]))
             row["torrent_id"] = m_id.group(1) if m_id else ""
-        nums = re.findall(r"[\d.]+\s*[KMGTP]?i?B|[\d,]+", norm_space(file_cell.xpath("string(.)")))
         tail = norm_space(file_cell.xpath("string(.)"))
         m = re.search(r"(\d+)\s+(\d+)\s+(\d+)\s+([\d.,]+\s*[KMGTP]i?B)\s*$", tail, re.IGNORECASE)
         if m:
             row["seeders"], row["leechers"], row["completed"] = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            row["size_bytes"] = _parse_size_bytes(m.group(4))
-
-        row["uploaded"] = _parse_size_bytes(cells[4].xpath("string(.)"))
+            row["size_bytes"] = parse_size_bytes(m.group(4))
+        row["uploaded"] = parse_size_bytes(cells[4].xpath("string(.)"))
         dl_parts = norm_space(cells[5].xpath("string(.)")).split()
-        row["downloaded"] = _parse_size_bytes(dl_parts[0] if dl_parts else "")
+        row["downloaded"] = parse_size_bytes(dl_parts[0] if dl_parts else "")
         row["download_credited"] = bool(cells[5].xpath(".//span[contains(@data-original-title,'Credited')]")
                                         or cells[5].xpath(".//span[@title][contains(@title,'Credited')]"))
-        row["ratio"] = _parse_number(cells[6].xpath("string(.)"))
-
+        row["ratio"] = parse_number(cells[6].xpath("string(.)"))
         for idx, key in ((7, "add_hours_ago"), (8, "updated_hours_ago")):
             spans = cells[idx].xpath(".//span[@data-toggle='tooltip']")
             if spans:
                 row[key] = _ago_to_hours(_tooltip_text(spans[0]))
-
         seed_spans = cells[9].xpath(".//span[@data-toggle='tooltip']")
         if seed_spans:
             row["seed_display"] = norm_space(cells[9].xpath("string(.)"))
-
         tip_nodes = [el for el in cells[10].xpath(".//*[@data-toggle='tooltip']")
                      if _tooltip_text(el)]
         if not tip_nodes:
-            # 无 tooltip 的裸文本(如 "3h left")兜底
             hr_text = norm_space(cells[10].xpath("string(.)"))
             if hr_text:
                 row["hr_state"] = "watch"
@@ -382,8 +504,6 @@ def parse_history_ledger(html_text: str) -> List[Dict[str, Any]]:
             bp = re.search(r"Clear this Hit & Run for (\d+) BP", tip)
             if bp:
                 row["hr_clear_bp"] = int(bp.group(1))
-
-        # 服务器做种时长: 有倒计时时由 要求-剩余 反推(分钟级精度)
         if row["hr_remaining_hours"] is not None and row["size_bytes"]:
             size_gib = row["size_bytes"] / (1 << 30)
             required = _hr_required_hours(size_gib)
@@ -429,3 +549,9 @@ def _remaining_to_hours(text: str) -> Optional[float]:
     if m:
         return float(m.group(1))
     return None
+
+
+# ================================================================ 注册
+
+register_rule(_make_exoticaz_rule())
+register_stats_parser(SITE_DOMAIN, parse_ratio_bar)

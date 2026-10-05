@@ -150,8 +150,13 @@ def update_learning_state(
     observations: Sequence[Mapping[str, Any]],
     *,
     now: Optional[float] = None,
+    update_features: bool = True,
 ) -> dict:
-    """追加一轮小时快照，并用真实累计上传增量更新任务内 EWMA。"""
+    """追加一轮小时快照，并用真实累计上传增量更新任务内 EWMA。
+
+    update_features=False 时只追加快照、不推进学习特征（EWMA/样本数/置信度）——
+    快照是引擎无关的上传观测（任务卡"上传 GB/天"等指标依赖），学习特征仅属于 smart。
+    """
     timestamp = float(now or time.time())
     current = dict(state or {})
     original_snapshots = current.get("snapshots", [])
@@ -194,6 +199,8 @@ def update_learning_state(
         changed = True
         latest[torrent_hash] = snapshot
         if not previous:
+            continue
+        if not update_features:
             continue
         elapsed_hours = (timestamp - _number(previous.get("at"))) / 3600.0
         delta = uploaded - _number(previous.get("uploaded"))

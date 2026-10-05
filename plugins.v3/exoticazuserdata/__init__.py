@@ -16,6 +16,7 @@ V3 插件源规范(与官方 MoviePilot-Plugins 仓库一致):
 解析逻辑: ./userdata_parser.py（纯逻辑, 样本驱动, 可独立测试）
 """
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -48,13 +49,16 @@ except ImportError:  # pragma: no cover
     SiteUserData = None
 
 
+SEEDING_CACHE_TTL_HOURS = 12
+
+
 class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
-    plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar / 个人页 / 做种列表。"
-    plugin_version = "1.3.5"
-    plugin_icon = "exoticazuserdata.png"
-    plugin_author = "iovejieba"
+    plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
+    plugin_version = "1.4.3"
+    plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
+    plugin_author = "HaoLekk"
     author_url = "https://github.com/jxxghp/MoviePilot"
     plugin_order = 20
     auth_level = 1
@@ -62,6 +66,7 @@ class ExoticaZUserData(_PluginBase):
     _enable = False
     _bin_maintain = True
     _fernet_key = ""
+    _crawl_in_progress = False
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
         self._enable = bool(config and config.get("enabled"))
@@ -114,7 +119,7 @@ class ExoticaZUserData(_PluginBase):
                     gh = ""
                 if gh and url.startswith("https://raw.githubusercontent.com/"):
                     url = (gh if gh.endswith("/") else gh + "/") + url
-                resp = RequestUtils(timeout=30).get_res(url)
+                resp = RequestUtils(timeout=20).get_res(url)
                 if resp is None:
                     return None
                 return resp.status_code, resp.content
@@ -170,16 +175,82 @@ class ExoticaZUserData(_PluginBase):
 
         domain = urlsplit(url).netloc or EXOTICAZ_DOMAIN_SUFFIX
         name = str(site.get("name") or domain)
+        cache = self._load_seeding_cache() or {}
+        fresh = self._seeding_cache_fresh(cache)
+        if not fresh and not self._crawl_in_progress:
+            # 做种页爬取(可能数十秒)放到后台线程, 绝不阻塞刷新调用
+            self._crawl_in_progress = True
+            threading.Thread(target=self._seeding_crawl_worker,
+                             args=(dict(site),), daemon=True).start()
         data = collect_user_data(
             fetch=self._make_fetcher(site),
             base_url=base_url_of(url),
+            include_active=False,   # 刷新路径永远快速: 只取 ratio-bar + 个人页
         )
+        if not data.get("err_msg"):
+            # 缓存合并: 做种体积/明细 + 失败时的 join_at/user_level 兜底
+            if cache.get("seeding_size") is not None:
+                data["seeding_size"] = int(cache.get("seeding_size") or 0)
+                data["seeding_info"] = list(cache.get("seeding_info") or [])
+            if not data.get("join_at") and cache.get("join_at"):
+                data["join_at"] = cache["join_at"]
+            if not data.get("user_level") and cache.get("user_level"):
+                data["user_level"] = cache["user_level"]
         if data.get("err_msg") and not data.get("userid"):
             # 与宿主内置行为对齐: 带 err_msg 且无 userid -> 不持久化, 手动刷新可见错误
             return SiteUserData(domain=domain, name=name, err_msg=data["err_msg"])
         return SiteUserData(domain=domain, name=name, **{
             k: v for k, v in data.items() if k != "err_msg"
         })
+
+    def _seeding_crawl_worker(self, site: Dict[str, Any]) -> None:
+        """后台爬取做种页并更新缓存(自愈): 完成后下一次刷新即带真数。"""
+        try:
+            from app.sdk.logging import logger
+        except ImportError:
+            import logging
+            logger = logging.getLogger("exoticazuserdata")
+        try:
+            url = str(site.get("url") or site.get("domain") or "")
+            data = collect_user_data(
+                fetch=self._make_fetcher(site),
+                base_url=base_url_of(url),
+                include_active=True,
+            )
+            if data.get("username") and not data.get("err_msg"):
+                self._save_seeding_cache({
+                    "ts": time.time(),
+                    "seeding_size": data.get("seeding_size") or 0,
+                    "seeding_info": data.get("seeding_info") or [],
+                    "join_at": data.get("join_at") or "",
+                    "user_level": data.get("user_level") or "",
+                })
+                logger.info(f"ExoticaZUserData: 做种体积缓存已更新 "
+                            f"({data.get('seeding_size', 0)/(1<<30):.2f} GiB)")
+            else:
+                logger.warn("ExoticaZUserData: 后台做种页爬取未获有效数据")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"ExoticaZUserData: 后台做种页爬取异常: {e}")
+        finally:
+            self._crawl_in_progress = False
+
+    def _load_seeding_cache(self) -> Optional[Dict[str, Any]]:
+        try:
+            return self.get_data("seeding_cache") or None
+        except Exception:
+            return None
+
+    def _save_seeding_cache(self, cache: Dict[str, Any]) -> None:
+        try:
+            self.save_data("seeding_cache", cache)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _seeding_cache_fresh(cache: Optional[Dict[str, Any]]) -> bool:
+        if not cache or not cache.get("ts"):
+            return False
+        return (time.time() - float(cache["ts"])) < SEEDING_CACHE_TTL_HOURS * 3600
 
     def _make_fetcher(self, site: Dict[str, Any]):
         """用宿主 RequestUtils 构造带 Cookie/UA/代理的请求器 + 1 rps 节流。"""

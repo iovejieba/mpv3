@@ -268,6 +268,15 @@ class SmartPolicy:
     rules_download_time_hours: float = 0.0
     rules_seed_avgspeed_kbps: float = 0.0
     rules_inactive_time_hours: float = 0.0
+    # smart 赦免线（9.6.0）：单种分享率/做种时长达标即视为任务完成——跳过评分与
+    # 低价值确认直接获得候选资格（达标是单调事实，无需二次确认）；带着保留评分
+    # 进池不插队，仍服从容量总闸门与删种预算。0 = 不启用。仅 smart 引擎生效。
+    smart_release_ratio: float = 0.0
+    smart_release_hours: float = 0.0
+    # 达标即释放（9.7.0）：rules/hr_policy 引擎下，满足规则/豁免的候选在下一轮
+    # 检查即删除，不再等待容量压力（容量闭环让位给用户配置的确定性节奏）。
+    # 仅对确定性引擎生效（smart 的容量等待是其核心语义，不受此开关影响）。
+    release_on_maturity: bool = False
 
 
 @dataclass(frozen=True)
@@ -793,6 +802,18 @@ def evaluate_candidate(
         return blocked("real_upload")
     if observation.active_peers is not None and observation.active_peers > 0:
         return blocked("active_connection")
+    if not rules_active and (policy.smart_release_ratio > 0 or policy.smart_release_hours > 0):
+        release_ratio = (policy.smart_release_ratio > 0 and observation.total_size > 0
+                         and observation.uploaded / observation.total_size >= policy.smart_release_ratio)
+        release_hours = (policy.smart_release_hours > 0
+                         and observation.seeding_time / 3600.0 >= policy.smart_release_hours)
+        if release_ratio or release_hours:
+            score, contributions = retention_score(
+                observation, history,
+                ratio_target=policy.ratio_target, ratio_weight=policy.ratio_weight,
+            )
+            reason = "smart_release_ratio" if release_ratio else "smart_release_hours"
+            return DecisionResult(observation.torrent_hash, "candidate", score, (reason,), contributions)
     if rules_active:
         if policy.rules_mode == "hr_policy":
             # 豁免即候选：命中策略站点的删种规则就是策略本身（共享安全线已在上方通过）
@@ -858,6 +879,9 @@ def select_deletions(
     pressure = bool(
         trigger is not None and (current_size >= trigger or (recovery_active and target_size is not None and current_size > target_size))
     )
+    # 达标即释放（9.7.0）：确定性引擎（rules/hr_policy）开启后，成熟候选无视容量
+    # 压力参与选择——预算（单轮/每日颗数与字节）仍是唯一节奏闸门。
+    mature_release = bool(policy.release_on_maturity and policy.rules_mode)
     capacity_base_for_pressure = disk_limit or trigger
     capacity_ratio = (
         max(current_size / capacity_base_for_pressure, 0.0)
@@ -878,7 +902,7 @@ def select_deletions(
         )
         for item in normalized
     )
-    if not pressure:
+    if not pressure and not mature_release:
         return SelectionResult(
             evaluated=evaluated,
             reason_codes=("no_pressure",),
@@ -886,7 +910,7 @@ def select_deletions(
             capacity_ratio=capacity_ratio,
         )
 
-    if target_size is None:
+    if target_size is None and not mature_release:
         return SelectionResult(
             evaluated=evaluated,
             reason_codes=("missing_target_size",),
@@ -912,12 +936,20 @@ def select_deletions(
     run_byte_cap = budget["run_byte_cap"]
     daily_byte_cap = budget["daily_byte_cap"]
     remaining_daily_bytes = budget["remaining_daily_bytes"]
+    # 大种子放行（9.7.4）：单轮字节配额小于本轮最大合格候选时，配额自动抬升到该
+    # 体积——配额的职责是限制"一次删多少颗"，不应让单个大种子永久死锁；节奏仍由
+    # 每日额度（字节+颗数）独立兜底，累计逻辑保证大种子一轮最多放行一颗。
+    largest_eligible = max(
+        (by_hash[result.torrent_hash].total_size for result in eligible),
+        default=0.0,
+    )
+    effective_run_byte_cap = max(run_byte_cap, largest_eligible) if run_byte_cap > 0 else 0.0
     selected: list[DecisionResult] = []
     reasons: list[str] = []
     freed = 0.0
     remaining_size = current_size
     for result in eligible:
-        if remaining_size <= target_size:
+        if remaining_size <= target_size and not mature_release:
             break
         if len(selected) >= run_count_cap:
             reasons.extend(("run_count_cap", "run_cap"))
@@ -926,7 +958,7 @@ def select_deletions(
             reasons.append("daily_count_cap")
             break
         size = by_hash[result.torrent_hash].total_size
-        if run_byte_cap > 0 and freed + size > run_byte_cap:
+        if effective_run_byte_cap > 0 and freed + size > effective_run_byte_cap:
             reasons.append("run_byte_cap")
             continue
         if daily_byte_cap > 0 and freed + size > remaining_daily_bytes:
@@ -952,7 +984,7 @@ def select_deletions(
         capacity_ratio=capacity_ratio,
         capacity_debt_bytes=max(current_size - target_size, 0.0),
         recovery_active=recovery_active,
-        run_byte_cap=run_byte_cap,
+        run_byte_cap=effective_run_byte_cap,
         daily_byte_cap=daily_byte_cap,
         run_count_cap=run_count_cap,
         daily_count_cap=daily_count_cap,
