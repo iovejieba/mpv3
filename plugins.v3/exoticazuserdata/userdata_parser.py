@@ -242,7 +242,8 @@ def parse_active_page(html_text: str) -> Tuple[int, int, List[Tuple[int, int]], 
 
 def collect_user_data(fetch: Callable[..., Any], base_url: str,
                       throttle: Optional[RequestThrottle] = None,
-                      include_active: bool = True) -> Dict[str, Any]:
+                      include_active: bool = True,
+                      profile_cache: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """完整采集编排。fetch(url) -> (status, text) | None。
 
     返回 dict:
@@ -252,6 +253,8 @@ def collect_user_data(fetch: Callable[..., Any], base_url: str,
     做种数以 ratio-bar 为准; 做种体积从 /profile/{u}/active 逐页累计。
     include_active=False 时跳过做种页爬取(结果不含 seeding_size/seeding_info),
     供调用方配合缓存使用——做种体积变化慢, 无需每次刷新都全量翻页。
+    profile_cache: 上次成功解析的 upload/download/ratio/join_at/user_level——
+    个人页抓取失败时的兜底源(避免 ratio-bar 舍入值与精确值交替造成幻影增量)。
     """
     throttle = throttle or RequestThrottle()
     result: Dict[str, Any] = {}
@@ -298,12 +301,19 @@ def collect_user_data(fetch: Callable[..., Any], base_url: str,
     profile = parse_profile(profile_html)
     if profile.get("user_level") and not result["user_level"]:
         result["user_level"] = profile["user_level"]
-    result["join_at"] = profile.get("join_at", "")
-    # 个人页统计表的精确值优先于 ratio-bar 的舍入主值(25.69 TB 粒度 ≈ 11 GiB,
-    # 每天几百 MB 的上传推不动主值 → 面板"冻结"; badge MB 为字节级精确值)
+    # 精确值优先; 个人页抓取失败时用上次成功值兜底——ratio-bar 舍入值与精确值
+    # 交替会造成 ±MB 幻影增量(2026-10-03 实机: -2.44 MB), 故失败时绝不回退舍入值
     for key in ("upload", "download", "ratio"):
         if profile.get(key):
             result[key] = profile[key]
+        elif profile_cache and profile_cache.get(key) is not None:
+            result[key] = profile_cache[key]
+    if profile.get("join_at"):
+        result["join_at"] = profile["join_at"]
+    elif profile_cache and profile_cache.get("join_at"):
+        result["join_at"] = profile_cache["join_at"]
+    if not result.get("user_level") and (profile_cache or {}).get("user_level"):
+        result["user_level"] = profile_cache["user_level"]
 
     # 3. 做种列表: 累计做种体积与逐种信息(失败不致命, 做种数以 ratio-bar 为准)
     #    DESIGN.md §7 预案的降级: 做种页结构异常/解析失败 → 只报 ratio-bar 做种数,

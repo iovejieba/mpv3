@@ -56,9 +56,9 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.3"
+    plugin_version = "1.4.5"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
-    plugin_author = "HaoLekk"
+    plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
     plugin_order = 20
     auth_level = 1
@@ -67,6 +67,7 @@ class ExoticaZUserData(_PluginBase):
     _bin_maintain = True
     _fernet_key = ""
     _crawl_in_progress = False
+    _collect_running = False
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
         self._enable = bool(config and config.get("enabled"))
@@ -172,7 +173,33 @@ class ExoticaZUserData(_PluginBase):
             return None
         if SiteUserData is None:
             return None
+        if self._collect_running:
+            # 并发去重: 已有同一轮采集在执行, 用缓存兜底快速返回(不重复请求站点)
+            cache = self._load_seeding_cache() or {}
+            if cache.get("username"):
+                return SiteUserData(
+                    domain=urlsplit(url).netloc or EXOTICAZ_DOMAIN_SUFFIX,
+                    name=str(site.get("name") or ""),
+                    username=cache["username"], userid=cache["username"],
+                    user_level=cache.get("user_level") or "",
+                    join_at=cache.get("join_at") or "",
+                    bonus=float(cache.get("bonus") or 0),
+                    upload=int(cache.get("upload") or 0),
+                    download=int(cache.get("download") or 0),
+                    ratio=float(cache.get("ratio") or 0),
+                    seeding=int(cache.get("seeding") or 0),
+                    leeching=int(cache.get("leeching") or 0),
+                    seeding_size=int(cache.get("seeding_size") or 0),
+                    seeding_info=list(cache.get("seeding_info") or []),
+                )
+            return None
+        self._collect_running = True
+        try:
+            return self._do_refresh_userdata(site, url)
+        finally:
+            self._collect_running = False
 
+    def _do_refresh_userdata(self, site: Dict[str, Any], url: str) -> Optional["SiteUserData"]:
         domain = urlsplit(url).netloc or EXOTICAZ_DOMAIN_SUFFIX
         name = str(site.get("name") or domain)
         cache = self._load_seeding_cache() or {}
@@ -185,17 +212,14 @@ class ExoticaZUserData(_PluginBase):
         data = collect_user_data(
             fetch=self._make_fetcher(site),
             base_url=base_url_of(url),
-            include_active=False,   # 刷新路径永远快速: 只取 ratio-bar + 个人页
+            include_active=False,    # 刷新路径永远快速: 只取 ratio-bar + 个人页
+            profile_cache=cache,     # 个人页抓取失败时的精确值兜底(防幻影增量)
         )
         if not data.get("err_msg"):
-            # 缓存合并: 做种体积/明细 + 失败时的 join_at/user_level 兜底
+            # 做种体积/明细来自缓存(后台线程自愈更新)
             if cache.get("seeding_size") is not None:
                 data["seeding_size"] = int(cache.get("seeding_size") or 0)
                 data["seeding_info"] = list(cache.get("seeding_info") or [])
-            if not data.get("join_at") and cache.get("join_at"):
-                data["join_at"] = cache["join_at"]
-            if not data.get("user_level") and cache.get("user_level"):
-                data["user_level"] = cache["user_level"]
         if data.get("err_msg") and not data.get("userid"):
             # 与宿主内置行为对齐: 带 err_msg 且无 userid -> 不持久化, 手动刷新可见错误
             return SiteUserData(domain=domain, name=name, err_msg=data["err_msg"])
@@ -212,18 +236,24 @@ class ExoticaZUserData(_PluginBase):
             logger = logging.getLogger("exoticazuserdata")
         try:
             url = str(site.get("url") or site.get("domain") or "")
+            old_cache = self._load_seeding_cache() or {}
             data = collect_user_data(
                 fetch=self._make_fetcher(site),
                 base_url=base_url_of(url),
                 include_active=True,
+                profile_cache=old_cache,   # 个人页失败时沿用上次精确值
             )
             if data.get("username") and not data.get("err_msg"):
                 self._save_seeding_cache({
                     "ts": time.time(),
-                    "seeding_size": data.get("seeding_size") or 0,
-                    "seeding_info": data.get("seeding_info") or [],
+                    "username": data.get("username") or "",
+                    "upload": data.get("upload") or 0,
+                    "download": data.get("download") or 0,
+                    "ratio": data.get("ratio") or 0.0,
                     "join_at": data.get("join_at") or "",
                     "user_level": data.get("user_level") or "",
+                    "seeding_size": data.get("seeding_size") or 0,
+                    "seeding_info": data.get("seeding_info") or [],
                 })
                 logger.info(f"ExoticaZUserData: 做种体积缓存已更新 "
                             f"({data.get('seeding_size', 0)/(1<<30):.2f} GiB)")

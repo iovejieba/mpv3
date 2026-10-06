@@ -2385,6 +2385,11 @@ class BrushFlow(_PluginBase):
                 "deletion_blockers": deletion_blockers,
                 "deletion_reason_codes": deletion_reason_codes,
                 "hr_rows": hr_rows,
+                "engine_label": (
+                    "规则线" if task.delete_engine == "rules"
+                    else "策略线" if task.delete_engine == "hr_policy" else "智能引擎"
+                ),
+                "seed_status_rows": self._seed_status_rows(evaluated_rows, torrents),
                 "pending_candidates": current_candidate_rows[:50],
                 "historic_candidates": candidate_rows[:50],
                 "audit_count": len(audit),
@@ -3250,6 +3255,11 @@ class BrushFlow(_PluginBase):
             "low_value_unconfirmed": "低价值信号尚未连续确认",
             "smart_release_ratio": "分享率已达赦免线，任务完成",
             "smart_release_hours": "做种时长已达赦免线，任务完成",
+            "rules_met": "规则达标",
+            "rules_not_met": "未达规则条件",
+            "rules_download_timeout": "下载超时",
+            "smart_release_ratio": "分享率已达赦免线，任务完成",
+            "smart_release_hours": "做种时长已达赦免线，任务完成",
             "valuable_seed": "存在上传需求或资源稀缺，继续保留",
             "no_low_value_candidate": "没有通过安全线和连续确认的低价值候选",
             "byte_cap": "删除容量配额已用尽",
@@ -3263,6 +3273,38 @@ class BrushFlow(_PluginBase):
         """把引擎原因码翻译成通知和日志可读的文本。"""
         codes = getattr(result, "reason_codes", ()) or ()
         return "、".join(cls._smart_reason_label(code) for code in codes) or "智能策略"
+
+    _SEED_ACTION_LABELS = {"candidate": "删除候选", "blocked": "保护中", "watch": "观察中", "keep": "评分保留"}
+    _SEED_ACTION_COLORS = {"candidate": "success", "blocked": "warning", "watch": "info", "keep": "primary"}
+    _SEED_ACTION_RANK = {"candidate": 0, "blocked": 1, "watch": 2, "keep": 3}
+
+    @classmethod
+    def _seed_status_rows(cls, evaluated_rows: List[dict], torrents: Dict[str, dict], limit: int = 50) -> List[dict]:
+        """全引擎种子状态行（9.7.5）：策略线由 hr_rows 承载公式明细，smart/rules
+        在此透传每颗种子的判定动作与翻译原因，供策略详情统一呈现。"""
+        rows: List[dict] = []
+        for row in evaluated_rows:
+            if row.get("hr"):
+                continue  # 策略线种子已由 H&R 明细行承载
+            torrent_hash = str(row.get("hash") or "")
+            action = str(row.get("action") or "")
+            score = float(row.get("score") or 0)
+            detail = "、".join(
+                cls._smart_reason_label(code) for code in (row.get("reason_codes") or [])
+            )
+            if not detail and action == "keep":
+                detail = f"{score:.1f} 分，评分保留"
+            rows.append({
+                "hash": torrent_hash,
+                "title": row.get("title") or torrents.get(torrent_hash, {}).get("title") or torrent_hash,
+                "action": action,
+                "status_label": cls._SEED_ACTION_LABELS.get(action, action or "未知"),
+                "color": cls._SEED_ACTION_COLORS.get(action, "default"),
+                "score": score,
+                "detail": detail or "暂无判定原因",
+            })
+        rows.sort(key=lambda r: (cls._SEED_ACTION_RANK.get(r["action"], 9), -r["score"]))
+        return rows[:limit]
 
     def _smart_policy(self, task: BrushTaskConfig) -> SmartPolicy:
         """从任务配置构造站点级智能策略；最低时长来自该任务绑定站点。"""
