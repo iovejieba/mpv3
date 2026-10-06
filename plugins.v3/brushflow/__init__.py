@@ -360,10 +360,10 @@ class BrushFlow(_PluginBase):
     """
 
     plugin_name = "站点刷流增强版"
-    plugin_desc = "多站点独立刷流管理；内置 ExoticaZ 等全站 H&R 站点策略层：官方公式豁免、服务器账本镜像、标定缓冲与做种窗口红区；统一收益引擎与下载健康闭环。"
+    plugin_desc = "多站点刷流三引擎聚合：策略线内置 ExoticaZ 等全站 H&R 站点策略（官方公式豁免、服务器账本镜像、做种窗口红区）；规则线自定义达标条件即删；智能线学习评分与容量闭环；统一智能选种、达标即释放与下载健康。"
     plugin_icon = "brush-flow.png"
     plugin_version = __version__
-    plugin_author = "jxxghp,InfinityPacer,Seed680"
+    plugin_author = "jxxghp,InfinityPacer,Seed680,iovejieba"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
     plugin_order = 21
@@ -3281,7 +3281,9 @@ class BrushFlow(_PluginBase):
     @classmethod
     def _seed_status_rows(cls, evaluated_rows: List[dict], torrents: Dict[str, dict], limit: int = 50) -> List[dict]:
         """全引擎种子状态行（9.7.5）：策略线由 hr_rows 承载公式明细，smart/rules
-        在此透传每颗种子的判定动作与翻译原因，供策略详情统一呈现。"""
+        在此透传每颗种子的判定动作与翻译原因，供策略详情统一呈现。
+        9.7.8：下载健康异常（异常低速/卡住等）并入状态徽章，已完成的判定行不再
+        重复显示保护原因之外的健康常态。"""
         rows: List[dict] = []
         for row in evaluated_rows:
             if row.get("hr"):
@@ -3289,16 +3291,22 @@ class BrushFlow(_PluginBase):
             torrent_hash = str(row.get("hash") or "")
             action = str(row.get("action") or "")
             score = float(row.get("score") or 0)
+            record = torrents.get(torrent_hash, {})
+            health = str(record.get("download_health_label") or "")
+            abnormal_health = bool(health) and health not in {"已完成", "正常推进", "已删除"}
             detail = "、".join(
                 cls._smart_reason_label(code) for code in (row.get("reason_codes") or [])
             )
             if not detail and action == "keep":
                 detail = f"{score:.1f} 分，评分保留"
+            status_label = cls._SEED_ACTION_LABELS.get(action, action or "未知")
+            if abnormal_health:
+                status_label = f"{status_label} · {health}"
             rows.append({
                 "hash": torrent_hash,
-                "title": row.get("title") or torrents.get(torrent_hash, {}).get("title") or torrent_hash,
+                "title": row.get("title") or record.get("title") or torrent_hash,
                 "action": action,
-                "status_label": cls._SEED_ACTION_LABELS.get(action, action or "未知"),
+                "status_label": status_label,
                 "color": cls._SEED_ACTION_COLORS.get(action, "default"),
                 "score": score,
                 "detail": detail or "暂无判定原因",
