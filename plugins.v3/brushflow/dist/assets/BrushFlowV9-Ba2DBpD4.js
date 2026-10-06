@@ -2290,7 +2290,7 @@ return (_ctx, _cache) => {
 };
 const TaskWizardV9 = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-94e9dcab"]]);
 
-const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,toDisplayString:_toDisplayString,createElementBlock:_createElementBlock,unref:_unref,normalizeClass:_normalizeClass,renderList:_renderList,Fragment:_Fragment,normalizeStyle:_normalizeStyle,withKeys:_withKeys,resolveDirective:_resolveDirective,withDirectives:_withDirectives} = await importShared('vue');
+const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,toDisplayString:_toDisplayString,createElementBlock:_createElementBlock,unref:_unref,normalizeClass:_normalizeClass,renderList:_renderList,Fragment:_Fragment,normalizeStyle:_normalizeStyle,withKeys:_withKeys} = await importShared('vue');
 
 
 const _hoisted_1 = { class: "bf9" };
@@ -2481,7 +2481,6 @@ return (_ctx, _cache) => {
   const _component_VSwitch = _resolveComponent("VSwitch");
   const _component_VTextField = _resolveComponent("VTextField");
   const _component_VSelect = _resolveComponent("VSelect");
-  const _directive_elif = _resolveDirective("elif");
 
   return (_openBlock(), _createElementBlock("div", _hoisted_1, [
     _createElementVNode("header", _hoisted_2, [
@@ -2942,38 +2941,37 @@ return (_ctx, _cache) => {
                                       }), 128))
                                     ])
                                   ], 64))
-                                : _createCommentVNode("", true),
-                              _withDirectives((_openBlock(), _createElementBlock("template", null, [
-                                _createVNode(_component_VDivider, { class: "my-3" }),
-                                _createElementVNode("h4", _hoisted_20, "种子状态（" + _toDisplayString(strategy.value.engine_label||'') + "）", 1),
-                                _createElementVNode("div", _hoisted_21, [
-                                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(strategy.value.seed_status_rows, (row) => {
-                                    return (_openBlock(), _createElementBlock("article", {
-                                      class: "hr-row",
-                                      key: row.hash
-                                    }, [
-                                      _createElementVNode("div", null, [
-                                        _createElementVNode("strong", {
-                                          title: row.title
-                                        }, _toDisplayString(row.title), 9, _hoisted_22),
-                                        _createElementVNode("small", null, _toDisplayString(row.detail), 1)
-                                      ]),
-                                      _createVNode(_component_VChip, {
-                                        size: "small",
-                                        color: row.color,
-                                        variant: "tonal"
-                                      }, {
-                                        default: _withCtx(() => [
-                                          _createTextVNode(_toDisplayString(row.status_label), 1)
-                                        ]),
-                                        _: 2
-                                      }, 1032, ["color"])
-                                    ]))
-                                  }), 128))
-                                ])
-                              ])), [
-                                [_directive_elif, strategy.value.seed_status_rows?.length]
-                              ])
+                                : (strategy.value.seed_status_rows?.length)
+                                  ? (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
+                                      _createVNode(_component_VDivider, { class: "my-3" }),
+                                      _createElementVNode("h4", _hoisted_20, "种子状态（" + _toDisplayString(strategy.value.engine_label||'') + "）", 1),
+                                      _createElementVNode("div", _hoisted_21, [
+                                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(strategy.value.seed_status_rows, (row) => {
+                                          return (_openBlock(), _createElementBlock("article", {
+                                            class: "hr-row",
+                                            key: row.hash
+                                          }, [
+                                            _createElementVNode("div", null, [
+                                              _createElementVNode("strong", {
+                                                title: row.title
+                                              }, _toDisplayString(row.title), 9, _hoisted_22),
+                                              _createElementVNode("small", null, _toDisplayString(row.detail), 1)
+                                            ]),
+                                            _createVNode(_component_VChip, {
+                                              size: "small",
+                                              color: row.color,
+                                              variant: "tonal"
+                                            }, {
+                                              default: _withCtx(() => [
+                                                _createTextVNode(_toDisplayString(row.status_label), 1)
+                                              ]),
+                                              _: 2
+                                            }, 1032, ["color"])
+                                          ]))
+                                        }), 128))
+                                      ])
+                                    ], 64))
+                                  : _createCommentVNode("", true)
                             ]),
                             _: 1
                           })
@@ -3603,6 +3601,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const BrushFlowV9 = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-09deb980"]]);
+const BrushFlowV9 = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-18479675"]]);
 
 export { BrushFlowV9 as B };
