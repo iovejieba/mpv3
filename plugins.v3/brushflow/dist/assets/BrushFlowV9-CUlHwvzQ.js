@@ -395,7 +395,7 @@ return (_ctx, _cache) => {
     fullscreen: _unref$1(display).smAndDown.value,
     "max-width": "72rem",
     scrollable: "",
-    "onUpdate:modelValue": _cache[98] || (_cache[98] = value => emit('update:modelValue', value))
+    "onUpdate:modelValue": _cache[102] || (_cache[102] = value => emit('update:modelValue', value))
   }, {
     default: _withCtx$1(() => [
       _createVNode$1(_component_VCard, { class: "wizard" }, {
@@ -448,7 +448,7 @@ return (_ctx, _cache) => {
                   : _createCommentVNode$1("", true),
                 (step.value===1)
                   ? (_openBlock$1(), _createElementBlock$1("section", _hoisted_4$1, [
-                      _cache[99] || (_cache[99] = _createElementVNode$1("div", null, [
+                      _cache[103] || (_cache[103] = _createElementVNode$1("div", null, [
                         _createElementVNode$1("h3", null, "这个任务刷哪个站？"),
                         _createElementVNode$1("p", null, "站点和下载器保存后仍可修改，历史数据会继续关联。")
                       ], -1)),
@@ -676,7 +676,7 @@ return (_ctx, _cache) => {
                   : _createCommentVNode$1("", true),
                 (step.value===2)
                   ? (_openBlock$1(), _createElementBlock$1("section", _hoisted_6$1, [
-                      _cache[100] || (_cache[100] = _createElementVNode$1("div", null, [
+                      _cache[104] || (_cache[104] = _createElementVNode$1("div", null, [
                         _createElementVNode$1("h3", null, "给任务多少空间和带宽？"),
                         _createElementVNode$1("p", null, "任务容量独立计算；全局限制只负责阻止继续新增。")
                       ], -1)),
@@ -827,7 +827,7 @@ return (_ctx, _cache) => {
                   : _createCommentVNode$1("", true),
                 (step.value===3)
                   ? (_openBlock$1(), _createElementBlock$1("section", _hoisted_7$1, [
-                      _cache[101] || (_cache[101] = _createElementVNode$1("div", null, [
+                      _cache[105] || (_cache[105] = _createElementVNode$1("div", null, [
                         _createElementVNode$1("h3", null, "优先选择什么种子？"),
                         _createElementVNode$1("p", null, "明确的体积、H&R和文本规则始终是硬过滤。")
                       ], -1)),
@@ -1039,7 +1039,7 @@ return (_ctx, _cache) => {
                 (step.value===4)
                   ? (_openBlock$1(), _createElementBlock$1("section", _hoisted_11$1, [
                       _createElementVNode$1("div", null, [
-                        _cache[102] || (_cache[102] = _createElementVNode$1("h3", null, "如何安全释放空间？", -1)),
+                        _cache[106] || (_cache[106] = _createElementVNode$1("h3", null, "如何安全释放空间？", -1)),
                         _createElementVNode$1("p", null, _toDisplayString$1(siteHasHrPolicy.value ? '该站点为全站 H&R，删种规则由站点策略接管。' : '新启用或风险扩大后先观察，不会立即删除。'), 1)
                       ]),
                       _createVNode$1(_component_VSwitch, {
@@ -1066,7 +1066,7 @@ return (_ctx, _cache) => {
                             type: "info",
                             variant: "tonal"
                           }, {
-                            default: _withCtx$1(() => [...(_cache[103] || (_cache[103] = [
+                            default: _withCtx$1(() => [...(_cache[107] || (_cache[107] = [
                               _createTextVNode$1("前48小时只记录候选，不会实际删除；未完成、H&R、未到最低保种、正在上传或有真实需求的种子永久保护。", -1)
                             ]))]),
                             _: 1
@@ -1078,7 +1078,7 @@ return (_ctx, _cache) => {
                             type: "info",
                             variant: "tonal"
                           }, {
-                            default: _withCtx$1(() => [...(_cache[104] || (_cache[104] = [
+                            default: _withCtx$1(() => [...(_cache[108] || (_cache[108] = [
                               _createTextVNode$1("规则达标即进入删除候选（仍受预算与安全线约束，无观察期）。", -1)
                             ]))]),
                             _: 1
@@ -1229,7 +1229,7 @@ return (_ctx, _cache) => {
                               _: 1
                             }),
                             _createElementVNode$1("div", _hoisted_13$1, [
-                              _cache[105] || (_cache[105] = _createElementVNode$1("div", { class: "adv-head" }, [
+                              _cache[109] || (_cache[109] = _createElementVNode$1("div", { class: "adv-head" }, [
                                 _createElementVNode$1("h4", null, "删除预算")
                               ], -1)),
                               _createVNode$1(_component_VRow, null, {
@@ -1382,6 +1382,55 @@ return (_ctx, _cache) => {
                                   })
                                 ]),
                                 _: 1
+                              }),
+                              _createVNode$1(_component_VRow, null, {
+                                default: _withCtx$1(() => [
+                                  _createVNode$1(_component_VCol, {
+                                    cols: "12",
+                                    md: "6"
+                                  }, {
+                                    default: _withCtx$1(() => [
+                                      _createVNode$1(_component_VTextField, {
+                                        modelValue: draft.value.strategy.overrides.capacity_trigger_percent,
+                                        "onUpdate:modelValue": [
+                                          _cache[53] || (_cache[53] = $event => ((draft.value.strategy.overrides.capacity_trigger_percent) = $event)),
+                                          markCustom
+                                        ],
+                                        modelModifiers: { number: true },
+                                        type: "number",
+                                        min: "1",
+                                        max: "100",
+                                        label: "容量触发线（%）",
+                                        hint: "容量达到该比例开始删种（默认90）",
+                                        "persistent-hint": ""
+                                      }, null, 8, ["modelValue"])
+                                    ]),
+                                    _: 1
+                                  }),
+                                  _createVNode$1(_component_VCol, {
+                                    cols: "12",
+                                    md: "6"
+                                  }, {
+                                    default: _withCtx$1(() => [
+                                      _createVNode$1(_component_VTextField, {
+                                        modelValue: draft.value.strategy.overrides.capacity_target_percent,
+                                        "onUpdate:modelValue": [
+                                          _cache[54] || (_cache[54] = $event => ((draft.value.strategy.overrides.capacity_target_percent) = $event)),
+                                          markCustom
+                                        ],
+                                        modelModifiers: { number: true },
+                                        type: "number",
+                                        min: "0",
+                                        max: "99",
+                                        label: "容量停止线（%）",
+                                        hint: "降回该比例停止删种（默认85）；需低于触发线",
+                                        "persistent-hint": ""
+                                      }, null, 8, ["modelValue"])
+                                    ]),
+                                    _: 1
+                                  })
+                                ]),
+                                _: 1
                               })
                             ])
                           ], 64))
@@ -1397,7 +1446,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: draft.value.deletion.min_seed_hours,
-                                      "onUpdate:modelValue": _cache[53] || (_cache[53] = $event => ((draft.value.deletion.min_seed_hours) = $event)),
+                                      "onUpdate:modelValue": _cache[55] || (_cache[55] = $event => ((draft.value.deletion.min_seed_hours) = $event)),
                                       modelModifiers: { number: true },
                                       type: "number",
                                       min: "1",
@@ -1413,7 +1462,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: draft.value.deletion.exclude_tags,
-                                      "onUpdate:modelValue": _cache[54] || (_cache[54] = $event => ((draft.value.deletion.exclude_tags) = $event)),
+                                      "onUpdate:modelValue": _cache[56] || (_cache[56] = $event => ((draft.value.deletion.exclude_tags) = $event)),
                                       label: "永不删除的标签（可选）",
                                       hint: "留空不排除任何标签"
                                     }, null, 8, ["modelValue"])
@@ -1426,14 +1475,14 @@ return (_ctx, _cache) => {
                             _createElementVNode$1("div", _hoisted_14$1, [
                               _createVNode$1(_component_VSwitch, {
                                 modelValue: draft.value.deletion.delete_data,
-                                "onUpdate:modelValue": _cache[55] || (_cache[55] = $event => ((draft.value.deletion.delete_data) = $event)),
+                                "onUpdate:modelValue": _cache[57] || (_cache[57] = $event => ((draft.value.deletion.delete_data) = $event)),
                                 color: "error",
                                 label: "清理时同时删除下载数据",
                                 "hide-details": ""
                               }, null, 8, ["modelValue"]),
                               _createVNode$1(_component_VSwitch, {
                                 modelValue: draft.value.deletion.invalid_tracker_cleanup,
-                                "onUpdate:modelValue": _cache[56] || (_cache[56] = $event => ((draft.value.deletion.invalid_tracker_cleanup) = $event)),
+                                "onUpdate:modelValue": _cache[58] || (_cache[58] = $event => ((draft.value.deletion.invalid_tracker_cleanup) = $event)),
                                 label: "清理Tracker明确拒绝的任务（保留数据）",
                                 "hide-details": ""
                               }, null, 8, ["modelValue"])
@@ -1449,7 +1498,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: draft.value.deletion.invalid_tracker_confirmations,
-                                          "onUpdate:modelValue": _cache[57] || (_cache[57] = $event => ((draft.value.deletion.invalid_tracker_confirmations) = $event)),
+                                          "onUpdate:modelValue": _cache[59] || (_cache[59] = $event => ((draft.value.deletion.invalid_tracker_confirmations) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "1",
@@ -1469,7 +1518,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VTextField, {
                                       modelValue: draft.value.deletion.auto_archive_days,
-                                      "onUpdate:modelValue": _cache[58] || (_cache[58] = $event => ((draft.value.deletion.auto_archive_days) = $event)),
+                                      "onUpdate:modelValue": _cache[60] || (_cache[60] = $event => ((draft.value.deletion.auto_archive_days) = $event)),
                                       modelModifiers: { number: true },
                                       type: "number",
                                       min: "1",
@@ -1492,7 +1541,7 @@ return (_ctx, _cache) => {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VSelect, {
                                       modelValue: draft.value.deletion.engine,
-                                      "onUpdate:modelValue": _cache[59] || (_cache[59] = $event => ((draft.value.deletion.engine) = $event)),
+                                      "onUpdate:modelValue": _cache[61] || (_cache[61] = $event => ((draft.value.deletion.engine) = $event)),
                                       label: "删种方式",
                                       items: [{title:'官方规则（达标删种，无观察期）',value:'rules'},{title:'智能引擎（收益学习 + 观察期）',value:'smart'}]
                                     }, null, 8, ["modelValue"])
@@ -1512,7 +1561,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: draft.value.deletion.smart_release_ratio,
-                                          "onUpdate:modelValue": _cache[60] || (_cache[60] = $event => ((draft.value.deletion.smart_release_ratio) = $event)),
+                                          "onUpdate:modelValue": _cache[62] || (_cache[62] = $event => ((draft.value.deletion.smart_release_ratio) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           step: "0.1",
@@ -1532,7 +1581,7 @@ return (_ctx, _cache) => {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VTextField, {
                                           modelValue: draft.value.deletion.smart_release_hours,
-                                          "onUpdate:modelValue": _cache[61] || (_cache[61] = $event => ((draft.value.deletion.smart_release_hours) = $event)),
+                                          "onUpdate:modelValue": _cache[63] || (_cache[63] = $event => ((draft.value.deletion.smart_release_hours) = $event)),
                                           modelModifiers: { number: true },
                                           type: "number",
                                           min: "0",
@@ -1550,7 +1599,7 @@ return (_ctx, _cache) => {
                               : _createCommentVNode$1("", true),
                             (draft.value.deletion.engine==='rules')
                               ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_15$1, [
-                                  _cache[107] || (_cache[107] = _createElementVNode$1("div", { class: "adv-head" }, [
+                                  _cache[111] || (_cache[111] = _createElementVNode$1("div", { class: "adv-head" }, [
                                     _createElementVNode$1("h4", null, "达标规则")
                                   ], -1)),
                                   _createVNode$1(_component_VRow, null, {
@@ -1562,7 +1611,7 @@ return (_ctx, _cache) => {
                                         default: _withCtx$1(() => [
                                           _createVNode$1(_component_VTextField, {
                                             modelValue: draft.value.deletion.rules_seed_time_hours,
-                                            "onUpdate:modelValue": _cache[62] || (_cache[62] = $event => ((draft.value.deletion.rules_seed_time_hours) = $event)),
+                                            "onUpdate:modelValue": _cache[64] || (_cache[64] = $event => ((draft.value.deletion.rules_seed_time_hours) = $event)),
                                             modelModifiers: { number: true },
                                             type: "number",
                                             min: "0",
@@ -1579,7 +1628,7 @@ return (_ctx, _cache) => {
                                         default: _withCtx$1(() => [
                                           _createVNode$1(_component_VTextField, {
                                             modelValue: draft.value.deletion.rules_seed_ratio,
-                                            "onUpdate:modelValue": _cache[63] || (_cache[63] = $event => ((draft.value.deletion.rules_seed_ratio) = $event)),
+                                            "onUpdate:modelValue": _cache[65] || (_cache[65] = $event => ((draft.value.deletion.rules_seed_ratio) = $event)),
                                             modelModifiers: { number: true },
                                             type: "number",
                                             step: "0.1",
@@ -1597,7 +1646,7 @@ return (_ctx, _cache) => {
                                         default: _withCtx$1(() => [
                                           _createVNode$1(_component_VTextField, {
                                             modelValue: draft.value.deletion.rules_seed_size_gb,
-                                            "onUpdate:modelValue": _cache[64] || (_cache[64] = $event => ((draft.value.deletion.rules_seed_size_gb) = $event)),
+                                            "onUpdate:modelValue": _cache[66] || (_cache[66] = $event => ((draft.value.deletion.rules_seed_size_gb) = $event)),
                                             modelModifiers: { number: true },
                                             type: "number",
                                             min: "0",
@@ -1614,7 +1663,7 @@ return (_ctx, _cache) => {
                                         default: _withCtx$1(() => [
                                           _createVNode$1(_component_VSelect, {
                                             modelValue: draft.value.deletion.rules_match,
-                                            "onUpdate:modelValue": _cache[65] || (_cache[65] = $event => ((draft.value.deletion.rules_match) = $event)),
+                                            "onUpdate:modelValue": _cache[67] || (_cache[67] = $event => ((draft.value.deletion.rules_match) = $event)),
                                             label: "条件组合",
                                             items: [{title:'任一条件满足',value:'any'},{title:'全部条件满足',value:'all'}]
                                           }, null, 8, ["modelValue"])
@@ -1629,7 +1678,7 @@ return (_ctx, _cache) => {
                                       _createVNode$1(_component_VExpansionPanel, null, {
                                         default: _withCtx$1(() => [
                                           _createVNode$1(_component_VExpansionPanelTitle, null, {
-                                            default: _withCtx$1(() => [...(_cache[106] || (_cache[106] = [
+                                            default: _withCtx$1(() => [...(_cache[110] || (_cache[110] = [
                                               _createTextVNode$1("更多条件（可选）", -1)
                                             ]))]),
                                             _: 1
@@ -1645,7 +1694,7 @@ return (_ctx, _cache) => {
                                                     default: _withCtx$1(() => [
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.deletion.rules_hr_seed_time_hours,
-                                                        "onUpdate:modelValue": _cache[66] || (_cache[66] = $event => ((draft.value.deletion.rules_hr_seed_time_hours) = $event)),
+                                                        "onUpdate:modelValue": _cache[68] || (_cache[68] = $event => ((draft.value.deletion.rules_hr_seed_time_hours) = $event)),
                                                         modelModifiers: { number: true },
                                                         type: "number",
                                                         min: "0",
@@ -1662,7 +1711,7 @@ return (_ctx, _cache) => {
                                                     default: _withCtx$1(() => [
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.deletion.rules_download_time_hours,
-                                                        "onUpdate:modelValue": _cache[67] || (_cache[67] = $event => ((draft.value.deletion.rules_download_time_hours) = $event)),
+                                                        "onUpdate:modelValue": _cache[69] || (_cache[69] = $event => ((draft.value.deletion.rules_download_time_hours) = $event)),
                                                         modelModifiers: { number: true },
                                                         type: "number",
                                                         min: "0",
@@ -1679,7 +1728,7 @@ return (_ctx, _cache) => {
                                                     default: _withCtx$1(() => [
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.deletion.rules_seed_avgspeed_kbps,
-                                                        "onUpdate:modelValue": _cache[68] || (_cache[68] = $event => ((draft.value.deletion.rules_seed_avgspeed_kbps) = $event)),
+                                                        "onUpdate:modelValue": _cache[70] || (_cache[70] = $event => ((draft.value.deletion.rules_seed_avgspeed_kbps) = $event)),
                                                         modelModifiers: { number: true },
                                                         type: "number",
                                                         min: "0",
@@ -1696,7 +1745,7 @@ return (_ctx, _cache) => {
                                                     default: _withCtx$1(() => [
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.deletion.rules_inactive_time_hours,
-                                                        "onUpdate:modelValue": _cache[69] || (_cache[69] = $event => ((draft.value.deletion.rules_inactive_time_hours) = $event)),
+                                                        "onUpdate:modelValue": _cache[71] || (_cache[71] = $event => ((draft.value.deletion.rules_inactive_time_hours) = $event)),
                                                         modelModifiers: { number: true },
                                                         type: "number",
                                                         min: "0",
@@ -1722,7 +1771,7 @@ return (_ctx, _cache) => {
                               : _createCommentVNode$1("", true),
                             (draft.value.deletion.engine==='rules')
                               ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_16$1, [
-                                  _cache[108] || (_cache[108] = _createElementVNode$1("div", { class: "adv-head" }, [
+                                  _cache[112] || (_cache[112] = _createElementVNode$1("div", { class: "adv-head" }, [
                                     _createElementVNode$1("h4", null, "删除预算")
                                   ], -1)),
                                   _createVNode$1(_component_VRow, null, {
@@ -1735,7 +1784,7 @@ return (_ctx, _cache) => {
                                           _createVNode$1(_component_VTextField, {
                                             modelValue: draft.value.strategy.overrides.max_delete_per_run,
                                             "onUpdate:modelValue": [
-                                              _cache[70] || (_cache[70] = $event => ((draft.value.strategy.overrides.max_delete_per_run) = $event)),
+                                              _cache[72] || (_cache[72] = $event => ((draft.value.strategy.overrides.max_delete_per_run) = $event)),
                                               markCustom
                                             ],
                                             modelModifiers: { number: true },
@@ -1756,7 +1805,7 @@ return (_ctx, _cache) => {
                                           _createVNode$1(_component_VTextField, {
                                             modelValue: draft.value.strategy.overrides.max_release_percent_run,
                                             "onUpdate:modelValue": [
-                                              _cache[71] || (_cache[71] = $event => ((draft.value.strategy.overrides.max_release_percent_run) = $event)),
+                                              _cache[73] || (_cache[73] = $event => ((draft.value.strategy.overrides.max_release_percent_run) = $event)),
                                               markCustom
                                             ],
                                             modelModifiers: { number: true },
@@ -1778,7 +1827,7 @@ return (_ctx, _cache) => {
                                           _createVNode$1(_component_VTextField, {
                                             modelValue: draft.value.strategy.overrides.max_release_percent_day,
                                             "onUpdate:modelValue": [
-                                              _cache[72] || (_cache[72] = $event => ((draft.value.strategy.overrides.max_release_percent_day) = $event)),
+                                              _cache[74] || (_cache[74] = $event => ((draft.value.strategy.overrides.max_release_percent_day) = $event)),
                                               markCustom
                                             ],
                                             modelModifiers: { number: true },
@@ -1800,7 +1849,7 @@ return (_ctx, _cache) => {
                                           _createVNode$1(_component_VTextField, {
                                             modelValue: draft.value.strategy.overrides.max_delete_percent_day,
                                             "onUpdate:modelValue": [
-                                              _cache[73] || (_cache[73] = $event => ((draft.value.strategy.overrides.max_delete_percent_day) = $event)),
+                                              _cache[75] || (_cache[75] = $event => ((draft.value.strategy.overrides.max_delete_percent_day) = $event)),
                                               markCustom
                                             ],
                                             modelModifiers: { number: true },
@@ -1821,9 +1870,58 @@ return (_ctx, _cache) => {
                                         default: _withCtx$1(() => [
                                           _createVNode$1(_component_VSwitch, {
                                             modelValue: draft.value.deletion.release_on_maturity,
-                                            "onUpdate:modelValue": _cache[74] || (_cache[74] = $event => ((draft.value.deletion.release_on_maturity) = $event)),
+                                            "onUpdate:modelValue": _cache[76] || (_cache[76] = $event => ((draft.value.deletion.release_on_maturity) = $event)),
                                             label: "达标即释放",
                                             hint: "开启后满足删种规则的种子在下一轮检查即删除，不等容量压力；预算仍生效。默认关闭=等容量压力再删（保守延保）",
+                                            "persistent-hint": ""
+                                          }, null, 8, ["modelValue"])
+                                        ]),
+                                        _: 1
+                                      })
+                                    ]),
+                                    _: 1
+                                  }),
+                                  _createVNode$1(_component_VRow, null, {
+                                    default: _withCtx$1(() => [
+                                      _createVNode$1(_component_VCol, {
+                                        cols: "12",
+                                        md: "6"
+                                      }, {
+                                        default: _withCtx$1(() => [
+                                          _createVNode$1(_component_VTextField, {
+                                            modelValue: draft.value.strategy.overrides.capacity_trigger_percent,
+                                            "onUpdate:modelValue": [
+                                              _cache[77] || (_cache[77] = $event => ((draft.value.strategy.overrides.capacity_trigger_percent) = $event)),
+                                              markCustom
+                                            ],
+                                            modelModifiers: { number: true },
+                                            type: "number",
+                                            min: "1",
+                                            max: "100",
+                                            label: "容量触发线（%）",
+                                            hint: "容量达到该比例开始删种（默认90）",
+                                            "persistent-hint": ""
+                                          }, null, 8, ["modelValue"])
+                                        ]),
+                                        _: 1
+                                      }),
+                                      _createVNode$1(_component_VCol, {
+                                        cols: "12",
+                                        md: "6"
+                                      }, {
+                                        default: _withCtx$1(() => [
+                                          _createVNode$1(_component_VTextField, {
+                                            modelValue: draft.value.strategy.overrides.capacity_target_percent,
+                                            "onUpdate:modelValue": [
+                                              _cache[78] || (_cache[78] = $event => ((draft.value.strategy.overrides.capacity_target_percent) = $event)),
+                                              markCustom
+                                            ],
+                                            modelModifiers: { number: true },
+                                            type: "number",
+                                            min: "0",
+                                            max: "99",
+                                            label: "容量停止线（%）",
+                                            hint: "降回该比例停止删种（默认85）；需低于触发线",
                                             "persistent-hint": ""
                                           }, null, 8, ["modelValue"])
                                         ]),
@@ -1838,14 +1936,14 @@ return (_ctx, _cache) => {
                               ? (_openBlock$1(), _createBlock$1(_component_VExpansionPanels, {
                                   key: 3,
                                   modelValue: advanced.value,
-                                  "onUpdate:modelValue": _cache[95] || (_cache[95] = $event => ((advanced).value = $event)),
+                                  "onUpdate:modelValue": _cache[99] || (_cache[99] = $event => ((advanced).value = $event)),
                                   class: "mt-4"
                                 }, {
                                   default: _withCtx$1(() => [
                                     _createVNode$1(_component_VExpansionPanel, { value: true }, {
                                       default: _withCtx$1(() => [
                                         _createVNode$1(_component_VExpansionPanelTitle, null, {
-                                          default: _withCtx$1(() => [...(_cache[109] || (_cache[109] = [
+                                          default: _withCtx$1(() => [...(_cache[113] || (_cache[113] = [
                                             _createTextVNode$1("高级设置（安全参数组）", -1)
                                           ]))]),
                                           _: 1
@@ -1853,20 +1951,20 @@ return (_ctx, _cache) => {
                                         _createVNode$1(_component_VExpansionPanelText, null, {
                                           default: _withCtx$1(() => [
                                             _createElementVNode$1("div", _hoisted_17$1, [
-                                              _cache[111] || (_cache[111] = _createElementVNode$1("p", null, "三档预设已提供完整保护，以下仅按需微调；改动后预设会标记为“自定义”。", -1)),
+                                              _cache[115] || (_cache[115] = _createElementVNode$1("p", null, "三档预设已提供完整保护，以下仅按需微调；改动后预设会标记为“自定义”。", -1)),
                                               _createVNode$1(_component_VBtn, {
                                                 size: "small",
                                                 variant: "tonal",
-                                                onClick: _cache[75] || (_cache[75] = $event => (chooseProfile(draft.value.strategy.profile==='custom'?'balanced':draft.value.strategy.profile)))
+                                                onClick: _cache[79] || (_cache[79] = $event => (chooseProfile(draft.value.strategy.profile==='custom'?'balanced':draft.value.strategy.profile)))
                                               }, {
-                                                default: _withCtx$1(() => [...(_cache[110] || (_cache[110] = [
+                                                default: _withCtx$1(() => [...(_cache[114] || (_cache[114] = [
                                                   _createTextVNode$1("恢复当前预设", -1)
                                                 ]))]),
                                                 _: 1
                                               })
                                             ]),
                                             _createElementVNode$1("div", _hoisted_18$1, [
-                                              _cache[112] || (_cache[112] = _createElementVNode$1("div", { class: "adv-head" }, [
+                                              _cache[116] || (_cache[116] = _createElementVNode$1("div", { class: "adv-head" }, [
                                                 _createElementVNode$1("h4", null, "评分")
                                               ], -1)),
                                               _createVNode$1(_component_VRow, null, {
@@ -1879,7 +1977,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.selection_min_score,
                                                         "onUpdate:modelValue": [
-                                                          _cache[76] || (_cache[76] = $event => ((draft.value.strategy.overrides.selection_min_score) = $event)),
+                                                          _cache[80] || (_cache[80] = $event => ((draft.value.strategy.overrides.selection_min_score) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -1901,7 +1999,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.deletion_score_threshold,
                                                         "onUpdate:modelValue": [
-                                                          _cache[77] || (_cache[77] = $event => ((draft.value.strategy.overrides.deletion_score_threshold) = $event)),
+                                                          _cache[81] || (_cache[81] = $event => ((draft.value.strategy.overrides.deletion_score_threshold) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -1923,7 +2021,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.cold_protection_minutes,
                                                         "onUpdate:modelValue": [
-                                                          _cache[78] || (_cache[78] = $event => ((draft.value.strategy.overrides.cold_protection_minutes) = $event)),
+                                                          _cache[82] || (_cache[82] = $event => ((draft.value.strategy.overrides.cold_protection_minutes) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -1942,7 +2040,7 @@ return (_ctx, _cache) => {
                                             ]),
                                             _createVNode$1(_component_VDivider, { class: "adv-divider" }),
                                             _createElementVNode$1("div", _hoisted_19$1, [
-                                              _cache[113] || (_cache[113] = _createElementVNode$1("div", { class: "adv-head" }, [
+                                              _cache[117] || (_cache[117] = _createElementVNode$1("div", { class: "adv-head" }, [
                                                 _createElementVNode$1("h4", null, "容量控制")
                                               ], -1)),
                                               _createVNode$1(_component_VRow, null, {
@@ -1955,7 +2053,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.capacity_trigger_percent,
                                                         "onUpdate:modelValue": [
-                                                          _cache[79] || (_cache[79] = $event => ((draft.value.strategy.overrides.capacity_trigger_percent) = $event)),
+                                                          _cache[83] || (_cache[83] = $event => ((draft.value.strategy.overrides.capacity_trigger_percent) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -1977,7 +2075,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.capacity_target_percent,
                                                         "onUpdate:modelValue": [
-                                                          _cache[80] || (_cache[80] = $event => ((draft.value.strategy.overrides.capacity_target_percent) = $event)),
+                                                          _cache[84] || (_cache[84] = $event => ((draft.value.strategy.overrides.capacity_target_percent) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -1997,7 +2095,7 @@ return (_ctx, _cache) => {
                                             ]),
                                             _createVNode$1(_component_VDivider, { class: "adv-divider" }),
                                             _createElementVNode$1("div", _hoisted_20$1, [
-                                              _cache[114] || (_cache[114] = _createElementVNode$1("div", { class: "adv-head" }, [
+                                              _cache[118] || (_cache[118] = _createElementVNode$1("div", { class: "adv-head" }, [
                                                 _createElementVNode$1("h4", null, "候选确认")
                                               ], -1)),
                                               _createVNode$1(_component_VRow, null, {
@@ -2010,7 +2108,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.candidate_confirmations,
                                                         "onUpdate:modelValue": [
-                                                          _cache[81] || (_cache[81] = $event => ((draft.value.strategy.overrides.candidate_confirmations) = $event)),
+                                                          _cache[85] || (_cache[85] = $event => ((draft.value.strategy.overrides.candidate_confirmations) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2032,7 +2130,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.confirmation_minutes,
                                                         "onUpdate:modelValue": [
-                                                          _cache[82] || (_cache[82] = $event => ((draft.value.strategy.overrides.confirmation_minutes) = $event)),
+                                                          _cache[86] || (_cache[86] = $event => ((draft.value.strategy.overrides.confirmation_minutes) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2053,7 +2151,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.demand_confirmations,
                                                         "onUpdate:modelValue": [
-                                                          _cache[83] || (_cache[83] = $event => ((draft.value.strategy.overrides.demand_confirmations) = $event)),
+                                                          _cache[87] || (_cache[87] = $event => ((draft.value.strategy.overrides.demand_confirmations) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2075,7 +2173,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VSwitch, {
                                                         modelValue: draft.value.strategy.overrides.protect_active_demand,
                                                         "onUpdate:modelValue": [
-                                                          _cache[84] || (_cache[84] = $event => ((draft.value.strategy.overrides.protect_active_demand) = $event)),
+                                                          _cache[88] || (_cache[88] = $event => ((draft.value.strategy.overrides.protect_active_demand) = $event)),
                                                           markCustom
                                                         ],
                                                         label: "挂账需求保护",
@@ -2091,7 +2189,7 @@ return (_ctx, _cache) => {
                                             ]),
                                             _createVNode$1(_component_VDivider, { class: "adv-divider" }),
                                             _createElementVNode$1("div", _hoisted_21$1, [
-                                              _cache[115] || (_cache[115] = _createElementVNode$1("div", { class: "adv-head" }, [
+                                              _cache[119] || (_cache[119] = _createElementVNode$1("div", { class: "adv-head" }, [
                                                 _createElementVNode$1("h4", null, "删除限额")
                                               ], -1)),
                                               _createVNode$1(_component_VRow, null, {
@@ -2104,7 +2202,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.max_delete_per_run,
                                                         "onUpdate:modelValue": [
-                                                          _cache[85] || (_cache[85] = $event => ((draft.value.strategy.overrides.max_delete_per_run) = $event)),
+                                                          _cache[89] || (_cache[89] = $event => ((draft.value.strategy.overrides.max_delete_per_run) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2125,7 +2223,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.max_release_percent_run,
                                                         "onUpdate:modelValue": [
-                                                          _cache[86] || (_cache[86] = $event => ((draft.value.strategy.overrides.max_release_percent_run) = $event)),
+                                                          _cache[90] || (_cache[90] = $event => ((draft.value.strategy.overrides.max_release_percent_run) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2147,7 +2245,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.max_release_percent_day,
                                                         "onUpdate:modelValue": [
-                                                          _cache[87] || (_cache[87] = $event => ((draft.value.strategy.overrides.max_release_percent_day) = $event)),
+                                                          _cache[91] || (_cache[91] = $event => ((draft.value.strategy.overrides.max_release_percent_day) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2169,7 +2267,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.max_release_gb_run,
                                                         "onUpdate:modelValue": [
-                                                          _cache[88] || (_cache[88] = $event => ((draft.value.strategy.overrides.max_release_gb_run) = $event)),
+                                                          _cache[92] || (_cache[92] = $event => ((draft.value.strategy.overrides.max_release_gb_run) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2191,7 +2289,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.max_release_gb_day,
                                                         "onUpdate:modelValue": [
-                                                          _cache[89] || (_cache[89] = $event => ((draft.value.strategy.overrides.max_release_gb_day) = $event)),
+                                                          _cache[93] || (_cache[93] = $event => ((draft.value.strategy.overrides.max_release_gb_day) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2213,7 +2311,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.strategy.overrides.max_delete_percent_day,
                                                         "onUpdate:modelValue": [
-                                                          _cache[90] || (_cache[90] = $event => ((draft.value.strategy.overrides.max_delete_percent_day) = $event)),
+                                                          _cache[94] || (_cache[94] = $event => ((draft.value.strategy.overrides.max_delete_percent_day) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2233,7 +2331,7 @@ return (_ctx, _cache) => {
                                             ]),
                                             _createVNode$1(_component_VDivider, { class: "adv-divider" }),
                                             _createElementVNode$1("div", _hoisted_22$1, [
-                                              _cache[116] || (_cache[116] = _createElementVNode$1("div", { class: "adv-head" }, [
+                                              _cache[120] || (_cache[120] = _createElementVNode$1("div", { class: "adv-head" }, [
                                                 _createElementVNode$1("h4", null, "下载健康")
                                               ], -1)),
                                               _createVNode$1(_component_VRow, null, {
@@ -2246,7 +2344,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.health.stalled_confirmations,
                                                         "onUpdate:modelValue": [
-                                                          _cache[91] || (_cache[91] = $event => ((draft.value.health.stalled_confirmations) = $event)),
+                                                          _cache[95] || (_cache[95] = $event => ((draft.value.health.stalled_confirmations) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2268,7 +2366,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.health.stalled_window_minutes,
                                                         "onUpdate:modelValue": [
-                                                          _cache[92] || (_cache[92] = $event => ((draft.value.health.stalled_window_minutes) = $event)),
+                                                          _cache[96] || (_cache[96] = $event => ((draft.value.health.stalled_window_minutes) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2289,7 +2387,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.health.slow_after_hours,
                                                         "onUpdate:modelValue": [
-                                                          _cache[93] || (_cache[93] = $event => ((draft.value.health.slow_after_hours) = $event)),
+                                                          _cache[97] || (_cache[97] = $event => ((draft.value.health.slow_after_hours) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2310,7 +2408,7 @@ return (_ctx, _cache) => {
                                                       _createVNode$1(_component_VTextField, {
                                                         modelValue: draft.value.health.slow_speed_kbps,
                                                         "onUpdate:modelValue": [
-                                                          _cache[94] || (_cache[94] = $event => ((draft.value.health.slow_speed_kbps) = $event)),
+                                                          _cache[98] || (_cache[98] = $event => ((draft.value.health.slow_speed_kbps) = $event)),
                                                           markCustom
                                                         ],
                                                         modelModifiers: { number: true },
@@ -2348,7 +2446,7 @@ return (_ctx, _cache) => {
                   color: "primary",
                   size: "28"
                 }),
-                _cache[117] || (_cache[117] = _createElementVNode$1("h3", null, "保存后会这样运行", -1)),
+                _cache[121] || (_cache[121] = _createElementVNode$1("h3", null, "保存后会这样运行", -1)),
                 _createElementVNode$1("p", null, _toDisplayString$1(preview.value), 1),
                 _createVNode$1(_component_VChip, { variant: "tonal" }, {
                   default: _withCtx$1(() => [
@@ -2369,7 +2467,7 @@ return (_ctx, _cache) => {
                     variant: "text",
                     onClick: previous
                   }, {
-                    default: _withCtx$1(() => [...(_cache[118] || (_cache[118] = [
+                    default: _withCtx$1(() => [...(_cache[122] || (_cache[122] = [
                       _createTextVNode$1("上一步", -1)
                     ]))]),
                     _: 1
@@ -2380,7 +2478,7 @@ return (_ctx, _cache) => {
                 variant: "text",
                 onClick: close
               }, {
-                default: _withCtx$1(() => [...(_cache[119] || (_cache[119] = [
+                default: _withCtx$1(() => [...(_cache[123] || (_cache[123] = [
                   _createTextVNode$1("取消", -1)
                 ]))]),
                 _: 1
@@ -2392,7 +2490,7 @@ return (_ctx, _cache) => {
                     variant: "flat",
                     onClick: next
                   }, {
-                    default: _withCtx$1(() => [...(_cache[120] || (_cache[120] = [
+                    default: _withCtx$1(() => [...(_cache[124] || (_cache[124] = [
                       _createTextVNode$1("下一步", -1)
                     ]))]),
                     _: 1
@@ -2404,7 +2502,7 @@ return (_ctx, _cache) => {
                     loading: __props.saving,
                     onClick: save
                   }, {
-                    default: _withCtx$1(() => [...(_cache[121] || (_cache[121] = [
+                    default: _withCtx$1(() => [...(_cache[125] || (_cache[125] = [
                       _createTextVNode$1("保存任务", -1)
                     ]))]),
                     _: 1
@@ -2417,14 +2515,14 @@ return (_ctx, _cache) => {
       }),
       _createVNode$1(_component_VDialog, {
         modelValue: saveConfirmOpen.value,
-        "onUpdate:modelValue": _cache[97] || (_cache[97] = $event => ((saveConfirmOpen).value = $event)),
+        "onUpdate:modelValue": _cache[101] || (_cache[101] = $event => ((saveConfirmOpen).value = $event)),
         "max-width": "32rem"
       }, {
         default: _withCtx$1(() => [
           _createVNode$1(_component_VCard, null, {
             default: _withCtx$1(() => [
               _createVNode$1(_component_VCardTitle, null, {
-                default: _withCtx$1(() => [...(_cache[122] || (_cache[122] = [
+                default: _withCtx$1(() => [...(_cache[126] || (_cache[126] = [
                   _createTextVNode$1("确认保存这套规则", -1)
                 ]))]),
                 _: 1
@@ -2453,9 +2551,9 @@ return (_ctx, _cache) => {
                   _createVNode$1(_component_VSpacer),
                   _createVNode$1(_component_VBtn, {
                     variant: "text",
-                    onClick: _cache[96] || (_cache[96] = $event => (saveConfirmOpen.value=false))
+                    onClick: _cache[100] || (_cache[100] = $event => (saveConfirmOpen.value=false))
                   }, {
-                    default: _withCtx$1(() => [...(_cache[123] || (_cache[123] = [
+                    default: _withCtx$1(() => [...(_cache[127] || (_cache[127] = [
                       _createTextVNode$1("返回修改", -1)
                     ]))]),
                     _: 1
@@ -2466,7 +2564,7 @@ return (_ctx, _cache) => {
                     loading: __props.saving,
                     onClick: confirmSave
                   }, {
-                    default: _withCtx$1(() => [...(_cache[124] || (_cache[124] = [
+                    default: _withCtx$1(() => [...(_cache[128] || (_cache[128] = [
                       _createTextVNode$1("确认保存", -1)
                     ]))]),
                     _: 1
@@ -2487,7 +2585,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskWizardV9 = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-17bb919c"]]);
+const TaskWizardV9 = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-20558839"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,toDisplayString:_toDisplayString,createElementBlock:_createElementBlock,unref:_unref,normalizeClass:_normalizeClass,renderList:_renderList,Fragment:_Fragment,normalizeStyle:_normalizeStyle,withKeys:_withKeys} = await importShared('vue');
 
