@@ -3124,6 +3124,28 @@ class BrushFlow(_PluginBase):
             report["operation_state"] = result["state"]
         else:
             result = {"state": "completed", "deleted_count": 0}
+        # 删种通知（9.8.3 修复）：从操作日志取本轮确认移除的种子推送。
+        # ≤5 颗逐个推（保留任务/站点/标题/原因四要素）；>5 颗汇总一条
+        # （TG 单条上限 4096 字符，长标题种子逐条推送有截断风险）。
+        if result.get("deleted_count"):
+            operation = self._get_task_service().get(task.id, operation_id) if operation_id else None
+            removed_items = [item for item in (operation or {}).get("items", [])
+                             if item.get("state") == "confirmed_removed"]
+            def _reason_of(item):
+                return ("、".join(self._smart_reason_label(code) for code in item.get("reason_codes") or [])
+                        or item.get("reason") or "删种规则达标")
+            if len(removed_items) <= 5:
+                for item in removed_items:
+                    self.__send_delete_message(
+                        torrent_tasks.get(item["hash"], item), _reason_of(item),
+                    )
+            elif removed_items:
+                lines = [f"· {str(item.get('title') or item.get('hash'))[:60]}（{_reason_of(item)}）"
+                         for item in removed_items]
+                self.__send_message(
+                    "【刷流任务种子删除】",
+                    f"任务：{task.name}\n本轮共删除 {len(removed_items)} 个：\n" + "\n".join(lines),
+                )
         self._save_current_task_data("smart_plan", {row["hash"]: "低价值候选，等待额度与安全复核" for row in regular})
         # Read the settled records, not the stale pre-deletion in-memory snapshot.
         torrent_tasks = self._current_task_data("torrents", {})
@@ -4189,12 +4211,33 @@ class BrushFlow(_PluginBase):
 
     @staticmethod
     def __build_add_message_text(torrent: Union[TorrentInfo, dict], task_name: str) -> str:
-        """兼容候选对象和任务字典构建新增通知文本"""
+        """兼容候选对象和任务字典构建新增通知文本。
+
+        标题排版（9.8.5/9.8.6）："[番号] 描述"型标题（日本番号站几乎全部如此）
+        标题行只留番号——番号即唯一标识，摘要冗余；完整描述截断后进"内容"行。
+        站点自带 description 的（红豆饭等）不被覆盖；无番号前缀的标题原样输出。
+        """
         def read_value(key: str, default: Any = None) -> Any:
             """统一读取候选对象或字典字段"""
             return torrent.get(key, default) if isinstance(torrent, dict) else getattr(torrent, key, default)
 
+        def split_title(raw: Any):
+            """[番号] 描述… 型标题拆分：返回 (番号, 描述截断)；不匹配则原样返回。"""
+            if not raw or not isinstance(raw, str):
+                return raw, None
+            match = re.match(r"^(\[[^\]]+\])\s*(.+)$", raw.strip(), re.DOTALL)
+            if not match:
+                return raw, None
+            detail = match.group(2)
+            if len(detail) > 150:
+                detail = detail[:150] + "…"
+            return match.group(1), detail
+
         lines = [f"任务：{task_name}"]
+        title, split_detail = split_title(read_value("title"))
+        description = read_value("description")
+        if split_detail and not description:
+            description = split_detail
         labels = {
             "site_name": "站点",
             "title": "标题",
@@ -4206,7 +4249,12 @@ class BrushFlow(_PluginBase):
             "hit_and_run": "Hit&Run",
         }
         for key, label in labels.items():
-            value = read_value(key)
+            if key == "title":
+                value = title
+            elif key == "description":
+                value = description
+            else:
+                value = read_value(key)
             if key == "size" and value:
                 value = StringUtils.str_filesize(value)
             if value not in (None, "", False):
