@@ -3280,6 +3280,8 @@ class BrushFlow(_PluginBase):
             "rules_met": "规则达标",
             "rules_not_met": "未达规则条件",
             "rules_download_timeout": "下载超时",
+            "hr_exempted": "H&R 公式豁免达标",
+            "hr_not_cleared": "H&R 未豁免",
             "smart_release_ratio": "分享率已达赦免线，任务完成",
             "smart_release_hours": "做种时长已达赦免线，任务完成",
             "valuable_seed": "存在上传需求或资源稀缺，继续保留",
@@ -4197,15 +4199,21 @@ class BrushFlow(_PluginBase):
         self.systemmessage.put(message, title="站点刷流")
 
     def __send_delete_message(self, torrent_task: dict, reason: str) -> None:
-        """发送包含任务、站点、种子和原因的删种通知"""
+        """发送包含任务、站点、种子和原因的删种通知（标题排版与加种通知同规则）"""
         task = self._get_task_config()
         if not task or not task.notify:
             return
+        raw_title = torrent_task.get("title") or "未知"
+        match = re.match(r"^(\[[^\]]+\])\s*(.+)$", str(raw_title).strip(), re.DOTALL)
+        title, detail = (match.group(1), match.group(2)) if match else (raw_title, None)
+        if detail and len(detail) > 150:
+            detail = detail[:150] + "…"
         text = (
             f"任务：{task.name}\n"
             f"站点：{torrent_task.get('site_name') or '未知'}\n"
-            f"标题：{torrent_task.get('title') or '未知'}\n"
-            f"原因：{reason}"
+            f"标题：{title}"
+            + (f"\n内容：{detail}" if detail else "")
+            + f"\n原因：{reason}"
         )
         self.post_message(mtype=NotificationType.SiteMessage, title="【刷流任务种子删除】", text=text)
 
