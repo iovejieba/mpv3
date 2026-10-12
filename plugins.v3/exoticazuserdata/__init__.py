@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.23"
+    plugin_version = "1.4.24"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -525,29 +525,38 @@ class ExoticaZUserData(_PluginBase):
         ], {"enabled": True, "bin_maintain": True, "fernet_key": "", "sukebei_patch": False}
 
     def _sukebei_status_card(self) -> Dict[str, Any]:
-        """域名白名单补丁状态卡: 五态可视化(主告警面, 日志为二级)。"""
+        """域名白名单补丁状态卡: 按用户当前意图(开关)判定, 全态如实显示。"""
         root = self._mp_root()
+
         if not self._sukebei_patch:
+            # ---- 用户意图: 关闭 ----
             state = site_patch.patch_state(root, enabled=False) if root else "off"
-            mark = self._load_seeding_cache() or {}
-            effective = mark.get("patch_effective")
-            state = site_patch.patch_state(root, enabled=True, effective=effective) if root else "error"
+            meta = {
+                "off": ("info", "域名白名单补丁：未启用。",
+                        "如需将 Sukebei 作为独立站点使用，请在设置中开启对应开关并保存。"),
+                "disabled_pending": ("warning", "Sukebei 支持：已关闭，重启后彻底停用。",
+                                     "补丁已从主项目移除，当前进程仍在使用旧代码——重启 MoviePilot 后彻底关闭。"),
+                "disabled_pending_restart": ("warning", "Sukebei 支持：已关闭，等待回滚。",
+                                             "补丁回滚已排队，重启 MoviePilot 后主项目恢复原状。"),
+            }.get(state, ("info", "域名白名单补丁：未启用。",
+                          "如需将 Sukebei 作为独立站点使用，请在设置中开启对应开关并保存。"))
+            vtype, title, sub = meta
+            return {
+                "component": "VAlert",
+                "props": {"type": vtype, "variant": "tonal", "text": f"{title} {sub}"},
+            }
+
+        # ---- 用户意图: 开启 ----
+        state = site_patch.patch_state(root, enabled=True) if root else "error"
         meta = {
             "applied": ("success", "域名白名单补丁：已应用并生效。",
                         "Sukebei(sukebei.nyaa.si) 可作为独立站点添加与使用。"),
             "pending_restart": ("warning", "域名白名单补丁：已写入，等待重启生效。",
                                 "补丁已应用到主项目，重启 MoviePilot 后 Sukebei 即可作为独立站点添加。"),
-            "disabled_pending": ("warning", "Sukebei 支持：已关闭，重启后彻底停用。",
-                                 "补丁已从主项目移除，当前进程仍在使用旧代码——重启 MoviePilot 后 Sukebei 独立站点支持即彻底关闭。"),
-            "disabled_pending_restart": ("warning", "Sukebei 支持：已关闭，等待回滚。",
-                                         "补丁回滚已排队，重启 MoviePilot 后主项目恢复原状。"),
-            "off": ("info", "域名白名单补丁：未启用。",
-                    "如需将 Sukebei 作为独立站点使用，请在设置中开启对应开关并保存。"),
-            "orphan": ("warning", "域名白名单补丁：开关已关闭，但主项目仍带补丁。",
-                       "保存设置后补丁将自动回滚(恢复原文件)，回滚后需重启 MP。"),
-            "error": ("error", "域名白名单补丁：状态异常。",
-                      "开关开启但补丁未能应用(MP 升级后结构变化？)，请查看插件日志。"),
-        }.get(state, ("error", f"未知状态: {state}", "请查看插件日志。"))
+            "error": ("warning", "域名白名单补丁：准备中，稍后自动完成。",
+                      "补丁将在后台自动应用(也可尝试保存设置触发)，应用后需重启 MP。"),
+        }.get(state, ("warning", "域名白名单补丁：准备中。",
+                      "稍后自动完成，如长时间不变请查看插件日志。"))
         vtype, title, sub = meta
         return {
             "component": "VAlert",

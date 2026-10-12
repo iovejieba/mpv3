@@ -29,20 +29,42 @@ def main() -> int:
         print(f"    (DB 直查不可用: {e})")
 
     print("[2] 插件运行实例的内存开关值")
+    inst = None
     try:
-        from app.runtime.extensions.plugin.manager import get_plugin_manager
-        pm = get_plugin_manager()
-        inst = pm.get_running("ExoticaZUserData") if hasattr(pm, "get_running") else None
-        if inst is None and hasattr(pm, "get_module"):
-            cls = pm.get_module("ExoticaZUserData")
-            inst = cls
-        if inst is not None and hasattr(inst, "_sukebei_patch"):
-            print(f"    _sukebei_patch = {inst._sukebei_patch}")
-            print(f"    _enable        = {getattr(inst, '_enable', '?')}")
-        else:
-            print("    (运行实例未找到或无该属性)")
+        # 路径1: 模块级单例(MP 常见模式)
+        import app.plugins.exoticazuserdata as plugin_mod
+        for name in dir(plugin_mod):
+            obj = getattr(plugin_mod, name)
+            if isinstance(obj, type) and hasattr(obj, "_sukebei_patch"):
+                pass
+        # 路径2: 从 PluginManager 的运行表拿
+        from app.runtime.extensions.plugin import manager as pm_mod
+        pm_obj = None
+        for name in dir(pm_mod):
+            if name == "get_plugin_manager":
+                pm_obj = getattr(pm_mod, name)()
+                break
+        if pm_obj is None:
+            # 尝试 app.plugins 命名空间的已知引用
+            for mod_name in ("app.plugins.exoticazuserdata",):
+                mod = sys.modules.get(mod_name)
+                if mod and hasattr(mod, "Plugin"):
+                    pass
+        # 直接找: lifecycle _running
+        if pm_obj is not None and hasattr(pm_obj, "_lifecycle"):
+            lc = pm_obj._lifecycle
+            running = getattr(lc, "_running", {})
+            inst = running.get("ExoticaZUserData")
+        elif pm_obj is not None and hasattr(pm_obj, "get_running_plugin"):
+            inst = pm_obj.get_running_plugin("ExoticaZUserData")
     except Exception as e:
-        print(f"    (异常: {e})")
+        print(f"    (抓取异常: {e})")
+    if inst is not None:
+        print(f"    实例类型: {type(inst).__name__}")
+        print(f"    _sukebei_patch = {getattr(inst, '_sukebei_patch', '?')}")
+        print(f"    _enable        = {getattr(inst, '_enable', '?')}")
+    else:
+        print("    运行实例未找到")
 
     print("[3] 磁盘 site.py 补丁状态")
     try:
@@ -76,28 +98,39 @@ def main() -> int:
     except Exception as e:
         print(f"    (异常: {e})")
 
-    print("[6] 状态卡会算出的 state(用真实 _sukebei_patch 值)")
+    print("[2b] gc 扫描运行实例(最可靠)")
+    try:
+        import gc
+        found = []
+        for o in gc.get_objects():
+            if type(o).__name__ == "ExoticaZUserData":
+                found.append(o)
+        if found:
+            for o in found:
+                print(f"    实例 {id(o)}: _sukebei_patch={o._sukebei_patch}, _enable={o._enable}")
+        else:
+            print("    gc 中无 ExoticaZUserData 实例")
+        globals()["_found_inst"] = found[0] if found else None
+    except Exception as e:
+        print(f"    (异常: {e})")
+        globals()["_found_inst"] = None
+
+    print("[6] 状态卡会算出的 state(用真实运行实例的开关值)")
     try:
         sys.path.insert(0, "/app/app/plugins/exoticazuserdata")
         from exoticazuserdata import site_patch as sp
-        # 用第 2 步抓到的内存值(或默认)模拟状态卡判定
         enabled = None
         try:
-            from app.runtime.extensions.plugin.manager import get_plugin_manager
-            pm = get_plugin_manager()
-            inst = pm.get_running("ExoticaZUserData") if hasattr(pm, "get_running") else None
-            if inst is not None:
-                enabled = bool(inst._sukebei_patch)
+            enabled = bool(globals().get("_found_inst")._sukebei_patch)
         except Exception:
             pass
         if enabled is None:
-            print("    (无法确定运行实例开关值, 跳过)")
+            print("    (无运行实例, 跳过)")
         else:
             from app.domain import site as site_mod
-            root = str(site_mod.__file__).rsplit(os.sep, 2)[0] if (os := __import__("os")) else None
-            state = sp.patch_state(root, enabled=enabled,
-                                   effective=None)
-            print(f"    _sukebei_patch={enabled} → state = {state}")
+            root = str(site_mod.__file__).rsplit(os.sep, 2)[0]
+            state = sp.patch_state(root, enabled=enabled, effective=None)
+            print(f"    状态卡按 _sukebei_patch={enabled} → state = {state}")
     except Exception as e:
         print(f"    (异常: {e})")
 
