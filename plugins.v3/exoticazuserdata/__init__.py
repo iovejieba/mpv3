@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.28"
+    plugin_version = "1.4.30"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -146,12 +146,14 @@ class ExoticaZUserData(_PluginBase):
             # --- 意图与磁盘一致 ---
             if desired and on_disk:
                 if new_process and pending:
-                    # 本次进程启动 = 补丁已被本进程加载 = 生效确认, 清标记
+                    # 本次进程启动 = 补丁已被本进程加载 = 生效确认, 清标记 + 转正
                     mark.pop("patch_pending", None)
                     mark["patch_desired"] = True
+                    mark["patch_effective"] = True
                     self._save_seeding_cache(mark)
                     return
                 mark["patch_desired"] = True
+                mark["patch_effective"] = True
                 self._save_seeding_cache(mark)
                 return
             # not desired and not on_disk
@@ -159,9 +161,11 @@ class ExoticaZUserData(_PluginBase):
                 # 本次进程启动确认了回滚完成, 清标记
                 mark.pop("patch_pending", None)
                 mark["patch_desired"] = False
+                mark["patch_effective"] = False
                 self._save_seeding_cache(mark)
                 return
             mark["patch_desired"] = False
+            mark["patch_effective"] = False
             self._save_seeding_cache(mark)
         except Exception as e:  # noqa: BLE001
             logger.error(f"ExoticaZUserData: 补丁生命周期标记异常: {e}")
@@ -183,12 +187,25 @@ class ExoticaZUserData(_PluginBase):
                 return
             on_disk = site_patch.domain_in_constant(
                 (root / site_patch.RELATIVE_FILE).read_text(encoding="utf-8"))
+            mark = self._load_seeding_cache() or {}
+            # 对齐动作发生后必须刷新生命周期标记:
+            #   自愈重打 → patch_effective=False(进程还没加载新补丁, 状态卡橙"等待重启")
+            #   回滚移除 → patch_effective=False(进程还带着旧补丁, 状态卡橙"回滚后需重启")
+            # 缺了这一步, 状态卡读到 effective=None → 按运行模块判 → 直接绿(2026-10-12 实机)
             if self._sukebei_patch and not on_disk:
                 ok, msg = site_patch.apply_or_remove(root, remove=False)
+                if ok:
+                    mark["patch_desired"] = True
+                    mark["patch_effective"] = False
+                    self._save_seeding_cache(mark)
                 level = logger.info if ok else logger.error
                 level(f"ExoticaZUserData: 域名白名单补丁自愈{'成功' if ok else '失败'}: {msg}(重启 MP 生效)")
             elif not self._sukebei_patch and on_disk:
                 ok, msg = site_patch.apply_or_remove(root, remove=True)
+                if ok:
+                    mark["patch_desired"] = False
+                    mark["patch_effective"] = False
+                    self._save_seeding_cache(mark)
                 level = logger.info if ok else logger.error
                 level(f"ExoticaZUserData: 域名白名单补丁回滚{'成功' if ok else '失败'}: {msg}(重启 MP 生效)")
         except Exception as e:  # noqa: BLE001
