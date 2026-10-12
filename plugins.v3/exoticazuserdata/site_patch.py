@@ -141,7 +141,8 @@ def _runtime_module_has_domain() -> Optional[bool]:
 
 
 def patch_state(target_root, enabled: bool, effective: Optional[bool] = None) -> str:
-    """返回 UI 状态卡用的补丁状态码: applied / pending_restart / off / orphan / error。
+    """返回 UI 状态卡用的补丁状态码:
+    applied / pending_restart / disabled_pending / disabled_pending_restart / off / error。
 
     判据(三层, 2026-10-12 v2):
       applied          = 开关开 + 磁盘有 + 运行模块有 + 生命周期标记 effective=True
@@ -155,8 +156,11 @@ def patch_state(target_root, enabled: bool, effective: Optional[bool] = None) ->
         on_disk = domain_in_constant(file_path.read_text(encoding="utf-8"))
     except Exception:
         return "off" if not enabled else "error"
-    if not enabled and not on_disk:
-        return "off"
+    if not enabled and on_disk:
+        # 关闭但磁盘仍有补丁: 区分"待回滚"(运行模块还有, 重启前仍在工作)
+        # 与"已回滚待重启"(磁盘已清, 进程还加载着旧代码)
+        runtime = _runtime_module_has_domain()
+        return "disabled_pending" if runtime is True else "disabled_pending_restart"
     if enabled and on_disk:
         runtime = _runtime_module_has_domain()
         if runtime is None:

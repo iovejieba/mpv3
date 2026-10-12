@@ -2,16 +2,14 @@
 
 源文件更新后重发插件即可完成适配升级。
 注1: date 字段已移除（引擎不支持 date_en_elapsed_parse）。
-注2: 分类采用数字 ID（API 契约 SiteCategory.id:int——exoticaz 用 1-8 数字;
-sukebei 沿用站点文本分类码, 需实机验证 /site/category 端点, 异常则改数字映射）。
+注2: 分类采用文本分类码（sukebei 体系 1_x/2_x）；exoticaz 用数字 ID 1-8。
 注3: exoticaz labels = div.tags 容器精选; sukebei 为公开站无需面板劫持。
-注4: sukebei 分类放宽(用户确认影视向归一): 1_1 Anime/1_2 Doujinshi/2_2 Videos
-→ 电影(筛选签可点); 1_3 Games/1_4 Manga/1_5 Pictures/2_1 Photobooks 不映射
-(保持未知, 非影视天然过滤)。"""
+注4: sukebei 分类全 7 类入签（可点过滤）；media_type=movie 兜底列显示；
+category 字段选择器用 ?c=（官方 nyaa 的 ?f= 在 sukebei 页面不存在）。"""
 
 import pprint
 
-OVERLAY_VERSION = "11"
+OVERLAY_VERSION = "12"
 
 OVERLAY_SITES = [{'id': 'exoticaz',
   'name': 'ExoticaZ',
@@ -100,13 +98,33 @@ OVERLAY_SITES = [{'id': 'exoticaz',
   'category': {'movie': [{'id': '1_1',
                           'value': '1_1',
                           'param': 'c',
-                          'cat': 'Anime',
+                          'cat': 'Art - Anime',
                           'desc': 'Art - Anime'},
                          {'id': '1_2',
                           'value': '1_2',
                           'param': 'c',
-                          'cat': 'Doujinshi',
+                          'cat': 'Art - Doujinshi',
                           'desc': 'Art - Doujinshi'},
+                         {'id': '1_3',
+                          'value': '1_3',
+                          'param': 'c',
+                          'cat': 'Art - Games',
+                          'desc': 'Art - Games'},
+                         {'id': '1_4',
+                          'value': '1_4',
+                          'param': 'c',
+                          'cat': 'Art - Manga',
+                          'desc': 'Art - Manga'},
+                         {'id': '1_5',
+                          'value': '1_5',
+                          'param': 'c',
+                          'cat': 'Art - Pictures',
+                          'desc': 'Art - Pictures'},
+                         {'id': '2_1',
+                          'value': '2_1',
+                          'param': 'c',
+                          'cat': 'Photobooks',
+                          'desc': 'Real Life - Photobooks'},
                          {'id': '2_2',
                           'value': '2_2',
                           'param': 'c',
@@ -116,7 +134,7 @@ OVERLAY_SITES = [{'id': 'exoticaz',
                'fields': {'id': {'selector': 'a[href*="/view/"]',
                                  'attribute': 'href',
                                  'filters': [{'name': 're_search', 'args': ['\\d+', 0]}]},
-                          'category': {'selector': 'td:nth-child(1) a[href*="?f="]',
+                          'category': {'selector': 'td:nth-child(1) a[href*="?c="]',
                                        'attribute': 'href',
                                        'filters': [{'name': 'querystring', 'args': 'c'}]},
                           'title': {'selector': 'td:nth-child(2) > a:not(.comments)'},
@@ -129,6 +147,7 @@ OVERLAY_SITES = [{'id': 'exoticaz',
                           'leechers': {'selector': 'td:nth-child(7)'},
                           'grabs': {'selector': 'td:nth-child(8)'},
                           'downloadvolumefactor': {'case': {'*': 0}},
-                          'uploadvolumefactor': {'case': {'*': 1}}}}}]
+                          'uploadvolumefactor': {'case': {'*': 1}}}},
+  'media_type': 'movie'}]
 
 OVERLAY_REMOVE = []

@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.18"
+    plugin_version = "1.4.20"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -538,8 +538,8 @@ class ExoticaZUserData(_PluginBase):
         """域名白名单补丁状态卡: 五态可视化(主告警面, 日志为二级)。"""
         root = self._mp_root()
         if not self._sukebei_patch:
-            # 开关关: 无论能否探测, 都不显示"异常"(用户未启用该功能)
-            state = "off" if root else "off"
+            # 开关关: 磁盘无补丁才显示"未启用"; 有补丁则显示关闭中状态(不谎报)
+            state = site_patch.patch_state(root, enabled=False) if root else "off"
         else:
             mark = self._load_seeding_cache() or {}
             effective = mark.get("patch_effective")
@@ -549,6 +549,10 @@ class ExoticaZUserData(_PluginBase):
                         "Sukebei(sukebei.nyaa.si) 可作为独立站点添加与使用。"),
             "pending_restart": ("warning", "域名白名单补丁：已写入，等待重启生效。",
                                 "补丁已应用到主项目，重启 MoviePilot 后 Sukebei 即可作为独立站点添加。"),
+            "disabled_pending": ("warning", "Sukebei 支持：已关闭，重启后彻底停用。",
+                                 "补丁已从主项目移除，当前进程仍在使用旧代码——重启 MoviePilot 后 Sukebei 独立站点支持即彻底关闭。"),
+            "disabled_pending_restart": ("warning", "Sukebei 支持：已关闭，等待回滚。",
+                                         "补丁回滚已排队，重启 MoviePilot 后主项目恢复原状。"),
             "off": ("info", "域名白名单补丁：未启用。",
                     "如需将 Sukebei 作为独立站点使用，请在设置中开启对应开关并保存。"),
             "orphan": ("warning", "域名白名单补丁：开关已关闭，但主项目仍带补丁。",
