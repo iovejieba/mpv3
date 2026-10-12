@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.22"
+    plugin_version = "1.4.23"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -81,12 +81,11 @@ class ExoticaZUserData(_PluginBase):
         if self._enable and self._bin_maintain:
             # 启动自检走后台线程, 不阻塞宿主启动；失败只记日志
             threading.Thread(target=self._safe_maintain, daemon=True).start()
-        if self._enable and self._sukebei_patch:
-            # 域名白名单补丁自愈(仅开关开启时): 补丁丢失(MP 升级冲掉) → 自动重打
-            threading.Thread(target=self._sukebei_selfheal, daemon=True).start()
-        if self._enable and not self._sukebei_patch:
-            # 回滚检查(仅插件启用且开关关时): 磁盘残留补丁 → 自动移除
-            threading.Thread(target=self._sukebei_rollback_check, daemon=True).start()
+        if self._enable:
+            # 域名白名单补丁生命周期自检(仅插件启用时):
+            #   开关开 + 补丁不在 → 自愈重打(MP 升级冲掉/历史清失)
+            #   开关关 + 补丁还在 → 回滚清理
+            threading.Thread(target=self._sukebei_lifecycle_check, daemon=True).start()
 
     def _update_patch_lifecycle(self) -> None:
         """补丁生命周期标记管理: 区分"刚写入待重启"与"重启后已生效"。
@@ -147,46 +146,37 @@ class ExoticaZUserData(_PluginBase):
         except Exception:
             return None
 
-    def _sukebei_selfheal(self) -> None:
-        """补丁自愈: 开关开着但磁盘补丁不在 → 自动重打(MP 升级冲掉后自愈)。"""
+    def _sukebei_lifecycle_check(self) -> None:
+        """补丁生命周期自检: 按开关意图对齐磁盘状态(单向修复, 失败保真)。
+
+        开关开 + 磁盘无补丁 → 重打(用户要功能; MP 升级冲掉/历史清失都算丢失)
+        开关关 + 磁盘有补丁 → 移除(用户不要功能; 历史残留/误写入都算多余)
+        """
         import logging
         try:
             from app.sdk.logging import logger
         except ImportError:
             logger = logging.getLogger("exoticazuserdata")
         try:
-            if not self._sukebei_patch:
-                return  # 双保险: 开关关时绝不自动打补丁
             root = self._mp_root()
             if root is None:
                 return
-            state = site_patch.patch_state(root, enabled=self._sukebei_patch)
-            if state == "error":  # 开关开但磁盘无补丁 → 重打
+            on_disk = site_patch.domain_in_constant(
+                (root / site_patch.RELATIVE_FILE).read_text(encoding="utf-8"))
+            if self._sukebei_patch and not on_disk:
                 ok, msg = site_patch.apply_or_remove(root, remove=False)
                 level = logger.info if ok else logger.error
                 level(f"ExoticaZUserData: 域名白名单补丁自愈{'成功' if ok else '失败'}: {msg}(重启 MP 生效)")
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"ExoticaZUserData: 补丁自愈异常: {e}")
-
-    def _sukebei_rollback_check(self) -> None:
-        """回滚检查: 开关关但磁盘残留补丁 → 自动移除(兑现"关闭即回滚"承诺)。"""
-        import logging
-        try:
-            from app.sdk.logging import logger
-        except ImportError:
-            logger = logging.getLogger("exoticazuserdata")
-        try:
-            if self._sukebei_patch:
-                return  # 双保险: 开关开时不做回滚
-            root = self._mp_root()
-            if root is None:
-                return
-            ok, msg = site_patch.apply_or_remove(root, remove=True)
-            if "无需移除" not in msg:
+            elif not self._sukebei_patch and on_disk:
+                ok, msg = site_patch.apply_or_remove(root, remove=True)
                 level = logger.info if ok else logger.error
                 level(f"ExoticaZUserData: 域名白名单补丁回滚{'成功' if ok else '失败'}: {msg}(重启 MP 生效)")
         except Exception as e:  # noqa: BLE001
-            logger.error(f"ExoticaZUserData: 补丁回滚检查异常: {e}")
+            logger.error(f"ExoticaZUserData: 补丁生命周期自检异常: {e}")
+
+    def _sukebei_rollback_check(self) -> None:
+        """兼容别名: 等价于生命周期自检。"""
+        self._sukebei_lifecycle_check()
 
     def get_state(self) -> bool:
         return self._enable
