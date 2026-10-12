@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.25-exp"
+    plugin_version = "1.4.26-exp"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -77,7 +77,8 @@ class ExoticaZUserData(_PluginBase):
         self._fernet_key = str((config or {}).get("fernet_key") or "")
         self._sukebei_patch = bool((config or {}).get("sukebei_patch", False))
         if self._enable:
-            self._update_patch_lifecycle()
+            # 生命周期标记管理必须在同步段(写入/确认时点无竞态)
+            self._update_patch_lifecycle(new_process=True)
         if self._enable and self._bin_maintain:
             # 启动自检走后台线程, 不阻塞宿主启动；失败只记日志
             threading.Thread(target=self._safe_maintain, daemon=True).start()
@@ -87,12 +88,20 @@ class ExoticaZUserData(_PluginBase):
             #   开关关 + 补丁还在 → 回滚清理
             threading.Thread(target=self._sukebei_lifecycle_check, daemon=True).start()
 
-    def _update_patch_lifecycle(self) -> None:
-        """补丁生命周期标记管理: 区分"刚写入待重启"与"重启后已生效"。
+    def _update_patch_lifecycle(self, new_process: bool = False) -> None:
+        """补丁生命周期标记管理(同步段执行, 无竞态)。
 
-        - 保存设置时: 记录 desired(开关意图), rebooted_since=False(本次写入待验证);
-        - 进程重启后首次 init: 若上次 desired 与本次一致且运行模块已加载补丁 →
-          rebooted_since=True(允许绿色); 若上次 action 是本次的逆操作也照常重算。
+        持久化标记 patch_pending:
+          True  = 补丁有写入动作且尚未被任何进程启动确认 → 状态卡显示中间态
+          False/缺 = 无待确认写入 → 状态卡显示终态(绿/灰)
+
+        逻辑:
+          - 开关开 + 磁盘无补丁 → 后台对齐 + 打 pending 标记(写入后待重启)
+          - 开关开 + 磁盘有补丁 + new_process(本次是进程启动) + 标记挂着
+            → 运行模块已在本进程加载补丁 → 确认生效, 清标记 → 绿
+          - 开关开 + 磁盘有补丁 + 标记无 → 稳定已生效态(绿)
+          - 开关关 + 磁盘有补丁 → 后台回滚 + 打 pending 标记(回滚后待重启)
+          - 开关关 + 磁盘无补丁 + new_process + 标记挂着 → 确认回滚完成, 清标记 → 灰
         """
         import logging
         try:
@@ -103,59 +112,48 @@ class ExoticaZUserData(_PluginBase):
             root = self._mp_root()
             if root is None:
                 return
-            mark = self._load_seeding_cache() or {}
-            desired = self._sukebei_patch
             site_file = root / site_patch.RELATIVE_FILE
-            on_disk_now = site_patch.domain_in_constant(site_file.read_text(encoding="utf-8"))
-            # 对齐动作检测: 磁盘状态与意图不符 → 本轮自检线程会执行追加/回滚
-            # → 进程加载的仍是旧代码, effective 必须复位为 False(重启后才与磁盘一致)
-            alignment_action_needed = (on_disk_now != desired)
-            if alignment_action_needed:
+            on_disk = site_patch.domain_in_constant(site_file.read_text(encoding="utf-8"))
+            mark = self._load_seeding_cache() or {}
+            pending = bool(mark.get("patch_pending"))
+            desired = self._sukebei_patch
+
+            # --- 意图与磁盘不一致 → 触发对齐 + 打标记 ---
+            if desired and not on_disk:
                 threading.Thread(target=self._sukebei_lifecycle_check, daemon=True).start()
-                mark["patch_desired"] = desired
-                mark["patch_effective"] = False
-                self._save_seeding_cache(mark)
-                return
-            runtime = site_patch._runtime_module_has_domain()
-            # 转正判据: 开关开 + 运行模块已加载补丁 → 即已生效。
-            # 运行模块加载是最高权重实锤(进程真实加载了带补丁的代码),
-            # 不依赖历史标记——老缓存缺 patch_desired 字段的场景(跨版本升级)同样正确转正。
-            # (2026-10-12 实机: 老缓存无此字段 → 误入"首次开启"分支 → 误报 error)
-            if desired and runtime is True:
+                mark["patch_pending"] = True
                 mark["patch_desired"] = True
-                mark["patch_effective"] = True
                 self._save_seeding_cache(mark)
                 return
-            if desired:
-                # 开关开但运行模块尚未加载(刚写入待重启, 或宿主外探测不可用):
-                # 保持待重启态, 等待下一次进程启动转正。
-                mark["patch_desired"] = True
-                mark["patch_effective"] = False
-                self._save_seeding_cache(mark)
-                return
-            if not desired and runtime is False:
+            if not desired and on_disk:
+                threading.Thread(target=self._sukebei_lifecycle_check, daemon=True).start()
+                mark["patch_pending"] = True
                 mark["patch_desired"] = False
-                mark["patch_effective"] = False
                 self._save_seeding_cache(mark)
                 return
-            # 到这里: 意图与运行态不一致 → 刚写入/刚回滚, 待重启
-            if mark.get("patch_desired") != desired or not mark.get("patch_effective"):
-                mark["patch_desired"] = desired
-                mark["patch_effective"] = False
+
+            # --- 意图与磁盘一致 ---
+            if desired and on_disk:
+                if new_process and pending:
+                    # 本次进程启动 = 补丁已被本进程加载 = 生效确认, 清标记
+                    mark.pop("patch_pending", None)
+                    mark["patch_desired"] = True
+                    self._save_seeding_cache(mark)
+                    return
+                mark["patch_desired"] = True
                 self._save_seeding_cache(mark)
+                return
+            # not desired and not on_disk
+            if new_process and pending:
+                # 本次进程启动确认了回滚完成, 清标记
+                mark.pop("patch_pending", None)
+                mark["patch_desired"] = False
+                self._save_seeding_cache(mark)
+                return
+            mark["patch_desired"] = False
+            self._save_seeding_cache(mark)
         except Exception as e:  # noqa: BLE001
             logger.error(f"ExoticaZUserData: 补丁生命周期标记异常: {e}")
-
-    def _mp_root(self) -> Optional[Path]:
-        """定位 MP 主项目根目录。
-
-        app/domain/site.py 的 __file__ = <root>/app/domain/site.py,
-        故 root = parents[2](容器内即 /app)。"""
-        try:
-            from app.domain import site as site_mod
-            return Path(site_mod.__file__).resolve().parents[2]
-        except Exception:
-            return None
 
     def _sukebei_lifecycle_check(self) -> None:
         """补丁生命周期自检: 按开关意图对齐磁盘状态(单向修复, 失败保真)。
