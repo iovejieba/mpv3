@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.33"
+    plugin_version = "1.4.34"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -158,8 +158,10 @@ class ExoticaZUserData(_PluginBase):
                 return
             # not desired and not on_disk
             if new_process and pending:
-                # 本次进程启动确认了回滚完成, 清标记
+                # 本次进程启动确认了回滚完成, 清标记(含 ever_applied:
+                # 回滚已确认 → 回到"未启用"而非永远"等待回滚", v1.4.31 引入的缺陷)
                 mark.pop("patch_pending", None)
+                mark.pop("patch_ever_applied", None)
                 mark["patch_desired"] = False
                 mark["patch_effective"] = False
                 self._save_seeding_cache(mark)
