@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.32"
+    plugin_version = "1.4.33"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -86,7 +86,7 @@ class ExoticaZUserData(_PluginBase):
             # 域名白名单补丁生命周期自检(仅插件启用时):
             #   开关开 + 补丁不在 → 自愈重打(MP 升级冲掉/历史清失)
             #   开关关 + 补丁还在 → 回滚清理
-            threading.Thread(target=self._sukebei_lifecycle_check, daemon=True).start()
+            self._sukebei_lifecycle_check()
 
     def _mp_root(self) -> Optional[Path]:
         """定位 MP 主项目根目录。
@@ -131,13 +131,13 @@ class ExoticaZUserData(_PluginBase):
 
             # --- 意图与磁盘不一致 → 触发对齐 + 打标记 ---
             if desired and not on_disk:
-                threading.Thread(target=self._sukebei_lifecycle_check, daemon=True).start()
+                # 对齐动作由 init 同步段的自检执行(线程已移除, 避免双线程竞态)
                 mark["patch_pending"] = True
                 mark["patch_desired"] = True
                 self._save_seeding_cache(mark)
                 return
             if not desired and on_disk:
-                threading.Thread(target=self._sukebei_lifecycle_check, daemon=True).start()
+                # 对齐动作由 init 同步段的自检执行(线程已移除, 避免双线程竞态)
                 mark["patch_pending"] = True
                 mark["patch_desired"] = False
                 self._save_seeding_cache(mark)
