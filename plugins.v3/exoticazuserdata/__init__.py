@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
+from . import site_patch
 from .site_bin_maintenance import BinMaintainer, DEFAULT_KEY
 from .userdata_parser import (
     EXOTICAZ_DOMAIN_SUFFIX,
@@ -56,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.5"
+    plugin_version = "1.4.17"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -67,15 +68,123 @@ class ExoticaZUserData(_PluginBase):
     _bin_maintain = True
     _fernet_key = ""
     _crawl_in_progress = False
+    _sukebei_patch = False
     _collect_running = False
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
         self._enable = bool(config and config.get("enabled"))
         self._bin_maintain = bool(config.get("bin_maintain", True)) if config else True
         self._fernet_key = str((config or {}).get("fernet_key") or "")
+        self._sukebei_patch = bool((config or {}).get("sukebei_patch", False))
+        if self._enable:
+            self._update_patch_lifecycle()
         if self._enable and self._bin_maintain:
             # 启动自检走后台线程, 不阻塞宿主启动；失败只记日志
             threading.Thread(target=self._safe_maintain, daemon=True).start()
+        if self._enable and self._sukebei_patch:
+            # 域名白名单补丁自愈(仅开关开启时): 补丁丢失(MP 升级冲掉) → 自动重打
+            threading.Thread(target=self._sukebei_selfheal, daemon=True).start()
+        if self._enable and not self._sukebei_patch:
+            # 回滚检查(仅插件启用且开关关时): 磁盘残留补丁 → 自动移除
+            threading.Thread(target=self._sukebei_rollback_check, daemon=True).start()
+
+    def _update_patch_lifecycle(self) -> None:
+        """补丁生命周期标记管理: 区分"刚写入待重启"与"重启后已生效"。
+
+        - 保存设置时: 记录 desired(开关意图), rebooted_since=False(本次写入待验证);
+        - 进程重启后首次 init: 若上次 desired 与本次一致且运行模块已加载补丁 →
+          rebooted_since=True(允许绿色); 若上次 action 是本次的逆操作也照常重算。
+        """
+        import logging
+        try:
+            from app.sdk.logging import logger
+        except ImportError:
+            logger = logging.getLogger("exoticazuserdata")
+        try:
+            root = self._mp_root()
+            if root is None:
+                return
+            mark = self._load_seeding_cache() or {}
+            desired = self._sukebei_patch
+            runtime = site_patch._runtime_module_has_domain()
+            # 运行模块已加载补丁 + 上次生命周期也处于"启用且已生效" → 真生效
+            # (区分残留: 残留场景上次 patch_effective 为 False/缺失 → 保持待重启, 用户重勾一次即清账)
+            was_effective = mark.get("patch_desired") is True and mark.get("patch_effective") is True
+            if desired and runtime is True and was_effective:
+                mark["patch_desired"] = True
+                mark["patch_effective"] = True
+                self._save_seeding_cache(mark)
+                return
+            if desired and runtime is True:
+                # 残留补丁 + 用户刚开启: 如实记为"待重启确认", 用户再保存一次即转正
+                mark["patch_desired"] = True
+                mark["patch_effective"] = False
+                self._save_seeding_cache(mark)
+                return
+            if not desired and runtime is False:
+                mark["patch_desired"] = False
+                mark["patch_effective"] = False
+                self._save_seeding_cache(mark)
+                return
+            # 到这里: 意图与运行态不一致 → 刚写入/刚回滚, 待重启
+            if mark.get("patch_desired") != desired or not mark.get("patch_effective"):
+                mark["patch_desired"] = desired
+                mark["patch_effective"] = False
+                self._save_seeding_cache(mark)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"ExoticaZUserData: 补丁生命周期标记异常: {e}")
+
+    def _mp_root(self) -> Optional[Path]:
+        """定位 MP 主项目根目录。
+
+        app/domain/site.py 的 __file__ = <root>/app/domain/site.py,
+        故 root = parents[2](容器内即 /app)。"""
+        try:
+            from app.domain import site as site_mod
+            return Path(site_mod.__file__).resolve().parents[2]
+        except Exception:
+            return None
+
+    def _sukebei_selfheal(self) -> None:
+        """补丁自愈: 开关开着但磁盘补丁不在 → 自动重打(MP 升级冲掉后自愈)。"""
+        import logging
+        try:
+            from app.sdk.logging import logger
+        except ImportError:
+            logger = logging.getLogger("exoticazuserdata")
+        try:
+            if not self._sukebei_patch:
+                return  # 双保险: 开关关时绝不自动打补丁
+            root = self._mp_root()
+            if root is None:
+                return
+            state = site_patch.patch_state(root, enabled=self._sukebei_patch)
+            if state == "error":  # 开关开但磁盘无补丁 → 重打
+                ok, msg = site_patch.apply_or_remove(root, remove=False)
+                level = logger.info if ok else logger.error
+                level(f"ExoticaZUserData: 域名白名单补丁自愈{'成功' if ok else '失败'}: {msg}(重启 MP 生效)")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"ExoticaZUserData: 补丁自愈异常: {e}")
+
+    def _sukebei_rollback_check(self) -> None:
+        """回滚检查: 开关关但磁盘残留补丁 → 自动移除(兑现"关闭即回滚"承诺)。"""
+        import logging
+        try:
+            from app.sdk.logging import logger
+        except ImportError:
+            logger = logging.getLogger("exoticazuserdata")
+        try:
+            if self._sukebei_patch:
+                return  # 双保险: 开关开时不做回滚
+            root = self._mp_root()
+            if root is None:
+                return
+            ok, msg = site_patch.apply_or_remove(root, remove=True)
+            if "无需移除" not in msg:
+                level = logger.info if ok else logger.error
+                level(f"ExoticaZUserData: 域名白名单补丁回滚{'成功' if ok else '失败'}: {msg}(重启 MP 生效)")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"ExoticaZUserData: 补丁回滚检查异常: {e}")
 
     def get_state(self) -> bool:
         return self._enable
@@ -317,7 +426,7 @@ class ExoticaZUserData(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [{
                                     "component": "VSwitch",
                                     "props": {"model": "enabled", "label": "启用插件"},
@@ -325,11 +434,20 @@ class ExoticaZUserData(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [{
                                     "component": "VSwitch",
                                     "props": {"model": "bin_maintain",
-                                              "label": "站点资源自维护(自动合并进官方bin)"},
+                                              "label": "站点资源自维护"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VSwitch",
+                                    "props": {"model": "sukebei_patch",
+                                              "label": "Sukebei 独立站点"},
                                 }],
                             },
                         ],
@@ -346,6 +464,26 @@ class ExoticaZUserData(_PluginBase):
                                         "model": "fernet_key",
                                         "label": "Fernet Key(留空使用内建值)",
                                         "placeholder": "仅在日志提示 key 轮换解密失败时填写",
+                                    },
+                                }],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [{
+                                    "component": "VAlert",
+                                    "props": {
+                                        "type": "warning",
+                                        "variant": "tonal",
+                                        "text": "Sukebei 开关会修改 MP 主项目文件 app/domain/site.py 一行"
+                                                "(向官方域名白名单机制追加 sukebei.nyaa.si, 与 u2.dmhy.org 先例同构)。"
+                                                "开启后需重启 MP 生效；关闭并重启即自动回滚。补丁带多锚点校验+AST 结构"
+                                                "等价检查+自动备份, 失败保真不会损坏主项目；MP 升级冲掉补丁后本插件会自动重打。",
                                     },
                                 }],
                             },
@@ -392,7 +530,35 @@ class ExoticaZUserData(_PluginBase):
                     },
                 ],
             }
-        ], {"enabled": True, "bin_maintain": True, "fernet_key": ""}
+        ], {"enabled": True, "bin_maintain": True, "fernet_key": "", "sukebei_patch": False}
+
+    def _sukebei_status_card(self) -> Dict[str, Any]:
+        """域名白名单补丁状态卡: 五态可视化(主告警面, 日志为二级)。"""
+        root = self._mp_root()
+        if not self._sukebei_patch:
+            # 开关关: 无论能否探测, 都不显示"异常"(用户未启用该功能)
+            state = "off" if root else "off"
+        else:
+            mark = self._load_seeding_cache() or {}
+            effective = mark.get("patch_effective")
+            state = site_patch.patch_state(root, enabled=True, effective=effective) if root else "error"
+        meta = {
+            "applied": ("success", "域名白名单补丁：已应用并生效。",
+                        "Sukebei(sukebei.nyaa.si) 可作为独立站点添加与使用。"),
+            "pending_restart": ("warning", "域名白名单补丁：已写入，等待重启生效。",
+                                "补丁已应用到主项目，重启 MoviePilot 后 Sukebei 即可作为独立站点添加。"),
+            "off": ("info", "域名白名单补丁：未启用。",
+                    "如需将 Sukebei 作为独立站点使用，请在设置中开启对应开关并保存。"),
+            "orphan": ("warning", "域名白名单补丁：开关已关闭，但主项目仍带补丁。",
+                       "保存设置后补丁将自动回滚(恢复原文件)，回滚后需重启 MP。"),
+            "error": ("error", "域名白名单补丁：状态异常。",
+                      "开关开启但补丁未能应用(MP 升级后结构变化？)，请查看插件日志。"),
+        }.get(state, ("error", f"未知状态: {state}", "请查看插件日志。"))
+        vtype, title, sub = meta
+        return {
+            "component": "VAlert",
+            "props": {"type": vtype, "variant": "tonal", "text": f"{title} {sub}"},
+        }
 
     def get_page(self) -> Optional[List[Dict[str, Any]]]:
         """详情页：运行状态卡 + 站点资源维护历史 + H&R 速查。"""
@@ -452,6 +618,16 @@ class ExoticaZUserData(_PluginBase):
                                         + "启动自检 + 每 24 小时自动同步官方资源并重合并 ExoticaZ 适配。",
                             },
                         }],
+                    },
+                ],
+            },
+            {
+                "component": "VRow",
+                "content": [
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12},
+                        "content": [self._sukebei_status_card()],
                     },
                 ],
             },

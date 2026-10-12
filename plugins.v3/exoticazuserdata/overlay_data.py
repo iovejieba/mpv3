@@ -2,13 +2,16 @@
 
 源文件更新后重发插件即可完成适配升级。
 注1: date 字段已移除（引擎不支持 date_en_elapsed_parse）。
-注2: 分类采用数字 ID（API 契约 SiteCategory.id:int），列经 media_type=movie
-统一显示"电影"。
-注3: labels = div.tags 内 tag-gray + tag-dark(排除 tag-addon 角标)——
-分辨率(2160p 4K / 1080p HD)、工作室(IENERGY)、演员(Kana MORISAWA)，
-类型标签(creampie 等)不占位。缺任一类时该段自然为空。"""
+注2: 分类采用数字 ID（API 契约 SiteCategory.id:int——exoticaz 用 1-8 数字;
+sukebei 沿用站点文本分类码, 需实机验证 /site/category 端点, 异常则改数字映射）。
+注3: exoticaz labels = div.tags 容器精选; sukebei 为公开站无需面板劫持。
+注4: sukebei 分类放宽(用户确认影视向归一): 1_1 Anime/1_2 Doujinshi/2_2 Videos
+→ 电影(筛选签可点); 1_3 Games/1_4 Manga/1_5 Pictures/2_1 Photobooks 不映射
+(保持未知, 非影视天然过滤)。"""
 
-OVERLAY_VERSION = "9"
+import pprint
+
+OVERLAY_VERSION = "11"
 
 OVERLAY_SITES = [{'id': 'exoticaz',
   'name': 'ExoticaZ',
@@ -81,6 +84,51 @@ OVERLAY_SITES = [{'id': 'exoticaz',
                           'param': 'category[]',
                           'cat': 'Books & Magazines',
                           'desc': 'ExoticaZ Books & Magazines'}]},
-  'media_type': 'movie'}]
+  'media_type': 'movie'},
+ {'id': 'sukebei',
+  'name': 'Sukebei',
+  'domain': 'https://sukebei.nyaa.si/',
+  'encoding': 'UTF-8',
+  'public': True,
+  'proxy': True,
+  'search': {'paths': [{'path': '?f=0&c=0_0&q={keyword}', 'method': 'get', 'type': 'all'},
+                       {'path': '?f=0&c=1_0&q={keyword}', 'method': 'get', 'type': 'movie'},
+                       {'path': '?f=0&c=1_0&q={keyword}', 'method': 'get', 'type': 'tv'},
+                       {'path': '?f=0&c=2_0&q={keyword}', 'method': 'get', 'type': 'music'}],
+             'result_media_type': 'requested'},
+  'browse': {'path': '?p={page}', 'start': 1},
+  'category': {'movie': [{'id': '1_1',
+                          'value': '1_1',
+                          'param': 'c',
+                          'cat': 'Anime',
+                          'desc': 'Art - Anime'},
+                         {'id': '1_2',
+                          'value': '1_2',
+                          'param': 'c',
+                          'cat': 'Doujinshi',
+                          'desc': 'Art - Doujinshi'},
+                         {'id': '2_2',
+                          'value': '2_2',
+                          'param': 'c',
+                          'cat': 'Real Life - Videos',
+                          'desc': 'Real Life - Videos'}]},
+  'torrents': {'list': {'selector': 'table.torrent-list > tbody > tr'},
+               'fields': {'id': {'selector': 'a[href*="/view/"]',
+                                 'attribute': 'href',
+                                 'filters': [{'name': 're_search', 'args': ['\\d+', 0]}]},
+                          'category': {'selector': 'td:nth-child(1) a[href*="?f="]',
+                                       'attribute': 'href',
+                                       'filters': [{'name': 'querystring', 'args': 'c'}]},
+                          'title': {'selector': 'td:nth-child(2) > a:not(.comments)'},
+                          'details': {'selector': 'td:nth-child(2) > a', 'attribute': 'href'},
+                          'download': {'selector': 'td:nth-child(3) > a[href*="/download/"]',
+                                       'attribute': 'href'},
+                          'date_added': {'selector': 'td:nth-child(5)'},
+                          'size': {'selector': 'td:nth-child(4)'},
+                          'seeders': {'selector': 'td:nth-child(6)'},
+                          'leechers': {'selector': 'td:nth-child(7)'},
+                          'grabs': {'selector': 'td:nth-child(8)'},
+                          'downloadvolumefactor': {'case': {'*': 0}},
+                          'uploadvolumefactor': {'case': {'*': 1}}}}}]
 
 OVERLAY_REMOVE = []
