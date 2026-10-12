@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.27"
+    plugin_version = "1.4.28"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -567,7 +567,11 @@ class ExoticaZUserData(_PluginBase):
             }
 
         # ---- 用户意图: 开启 ----
-        state = site_patch.patch_state(root, enabled=True) if root else "error"
+        # 生命周期标记 effective: 只有"上次保存时已确认生效"才允许绿色,
+        # 刚写入(待重启)时为 False → 状态卡如实显示中间态
+        mark = self._load_seeding_cache() or {}
+        effective = mark.get("patch_effective")
+        state = site_patch.patch_state(root, enabled=True, effective=effective) if root else "error"
         meta = {
             "applied": ("success", "域名白名单补丁：已应用并生效。",
                         "Sukebei(sukebei.nyaa.si) 可作为独立站点添加与使用。"),
