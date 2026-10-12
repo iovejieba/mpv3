@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.20"
+    plugin_version = "1.4.21"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -538,9 +538,7 @@ class ExoticaZUserData(_PluginBase):
         """域名白名单补丁状态卡: 五态可视化(主告警面, 日志为二级)。"""
         root = self._mp_root()
         if not self._sukebei_patch:
-            # 开关关: 磁盘无补丁才显示"未启用"; 有补丁则显示关闭中状态(不谎报)
             state = site_patch.patch_state(root, enabled=False) if root else "off"
-        else:
             mark = self._load_seeding_cache() or {}
             effective = mark.get("patch_effective")
             state = site_patch.patch_state(root, enabled=True, effective=effective) if root else "error"
