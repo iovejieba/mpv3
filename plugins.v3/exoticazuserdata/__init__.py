@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.26-exp"
+    plugin_version = "1.4.27"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -87,6 +87,17 @@ class ExoticaZUserData(_PluginBase):
             #   开关开 + 补丁不在 → 自愈重打(MP 升级冲掉/历史清失)
             #   开关关 + 补丁还在 → 回滚清理
             threading.Thread(target=self._sukebei_lifecycle_check, daemon=True).start()
+
+    def _mp_root(self) -> Optional[Path]:
+        """定位 MP 主项目根目录。
+
+        app/domain/site.py 的 __file__ = <root>/app/domain/site.py,
+        故 root = parents[2](容器内即 /app)。"""
+        try:
+            from app.domain import site as site_mod
+            return Path(site_mod.__file__).resolve().parents[2]
+        except Exception:
+            return None
 
     def _update_patch_lifecycle(self, new_process: bool = False) -> None:
         """补丁生命周期标记管理(同步段执行, 无竞态)。
