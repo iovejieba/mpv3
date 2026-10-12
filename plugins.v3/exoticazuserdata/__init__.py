@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.24"
+    plugin_version = "1.4.25-exp"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -105,6 +105,17 @@ class ExoticaZUserData(_PluginBase):
                 return
             mark = self._load_seeding_cache() or {}
             desired = self._sukebei_patch
+            site_file = root / site_patch.RELATIVE_FILE
+            on_disk_now = site_patch.domain_in_constant(site_file.read_text(encoding="utf-8"))
+            # 对齐动作检测: 磁盘状态与意图不符 → 本轮自检线程会执行追加/回滚
+            # → 进程加载的仍是旧代码, effective 必须复位为 False(重启后才与磁盘一致)
+            alignment_action_needed = (on_disk_now != desired)
+            if alignment_action_needed:
+                threading.Thread(target=self._sukebei_lifecycle_check, daemon=True).start()
+                mark["patch_desired"] = desired
+                mark["patch_effective"] = False
+                self._save_seeding_cache(mark)
+                return
             runtime = site_patch._runtime_module_has_domain()
             # 转正判据: 开关开 + 运行模块已加载补丁 → 即已生效。
             # 运行模块加载是最高权重实锤(进程真实加载了带补丁的代码),
