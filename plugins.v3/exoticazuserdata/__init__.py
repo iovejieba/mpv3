@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.21"
+    plugin_version = "1.4.22"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -107,18 +107,18 @@ class ExoticaZUserData(_PluginBase):
             mark = self._load_seeding_cache() or {}
             desired = self._sukebei_patch
             runtime = site_patch._runtime_module_has_domain()
-            # 转正判据: 上次已表达启用意图(desired=True) + 本次启动时运行模块已加载补丁。
-            # 运行模块加载 = 重启已发生 = 磁盘补丁已生效(无论补丁来自本次写入还是历史),
-            # 因此"残留场景首次启用"只需保存一次 + 重启即转正(无需两次保存)。
-            if desired and runtime is True and mark.get("patch_desired") is True:
+            # 转正判据: 开关开 + 运行模块已加载补丁 → 即已生效。
+            # 运行模块加载是最高权重实锤(进程真实加载了带补丁的代码),
+            # 不依赖历史标记——老缓存缺 patch_desired 字段的场景(跨版本升级)同样正确转正。
+            # (2026-10-12 实机: 老缓存无此字段 → 误入"首次开启"分支 → 误报 error)
+            if desired and runtime is True:
                 mark["patch_desired"] = True
                 mark["patch_effective"] = True
                 self._save_seeding_cache(mark)
                 return
-            if desired and runtime is True:
-                # 首次开启(无历史意图记录): 记录意图, 本次先显示"待重启",
-                # 重启后上面分支转正 —— 若进程内已加载则此处 runtime 已为 True,
-                # 属于"未重启但模块已加载"(理论不发生), 同样记录意图等待下轮。
+            if desired:
+                # 开关开但运行模块尚未加载(刚写入待重启, 或宿主外探测不可用):
+                # 保持待重启态, 等待下一次进程启动转正。
                 mark["patch_desired"] = True
                 mark["patch_effective"] = False
                 self._save_seeding_cache(mark)
