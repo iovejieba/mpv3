@@ -57,7 +57,7 @@ class ExoticaZUserData(_PluginBase):
     # 插件 ID 即类名（V3 生命周期以 plugin.__name__ 为 ID），勿改名
     plugin_name = "ExoticaZ 用户数据"
     plugin_desc = "exoticaz.to 站点用户面板数据适配：接管 refresh_userdata，解析 ratio-bar/个人页/做种列表；做种体积 12h 缓存以控制站点请求量。"
-    plugin_version = "1.4.30"
+    plugin_version = "1.4.32"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png"
     plugin_author = "iovejieba"
     author_url = "https://github.com/jxxghp/MoviePilot"
@@ -197,6 +197,7 @@ class ExoticaZUserData(_PluginBase):
                 if ok:
                     mark["patch_desired"] = True
                     mark["patch_effective"] = False
+                    mark["patch_ever_applied"] = True
                     self._save_seeding_cache(mark)
                 level = logger.info if ok else logger.error
                 level(f"ExoticaZUserData: 域名白名单补丁自愈{'成功' if ok else '失败'}: {msg}(重启 MP 生效)")
@@ -568,6 +569,11 @@ class ExoticaZUserData(_PluginBase):
         if not self._sukebei_patch:
             # ---- 用户意图: 关闭 ----
             state = site_patch.patch_state(root, enabled=False) if root else "off"
+            # 磁盘已回滚(off)时, 依据"上次补丁在位"标记区分:
+            #   从未打过补丁 → 未启用; 打过且已回滚 → 已关闭(重启后彻底停用)
+            mark = self._load_seeding_cache() or {}
+            if state == "off" and mark.get("patch_ever_applied"):
+                state = "disabled_pending_restart"
             meta = {
                 "off": ("info", "域名白名单补丁：未启用。",
                         "如需将 Sukebei 作为独立站点使用，请在设置中开启对应开关并保存。"),

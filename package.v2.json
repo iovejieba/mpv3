@@ -77,7 +77,7 @@
     "name": "ExoticaZ 用户数据",
     "description": "exoticaz.to 站点用户面板数据适配：通过官方 get_module 钩子劫持系统方法 refresh_userdata，解析 ratio-bar / 个人资料页 / 做种列表，生成站点用户数据（等级、注册时间、上传下载、分享率、魔力、做种数）。仅接管 exoticaz.to，其余站点行为不受影响。内置站点资源自维护：自动解码官方 user.sites.v3.bin、合入 exoticaz 适配段并管理版本（官方更新后自动重合并，支持 key 轮换探针）。配套 H&R 账本解析（parse_history_ledger）可供刷流类插件复用。",
     "labels": "站点,用户数据,PT",
-    "version": "1.4.30",
+    "version": "1.4.32",
     "release": true,
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/spider.png",
     "author": "iovejieba",
