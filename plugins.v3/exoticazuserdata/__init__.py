@@ -70,6 +70,21 @@ class ExoticaZUserData(_PluginBase):
     _crawl_in_progress = False
     _sukebei_patch = False
     _collect_running = False
+    # 进程内一次性标记: 类属性随进程生命周期存在, 插件重载(同进程重新实例化)不会重置。
+    # 首次 init_plugin 时抢占为 True, 之后恒 False —— 用于区分"进程启动"与"插件重载"。
+    _process_boot_claimed = False
+
+    def _claim_process_boot(self) -> bool:
+        """抢占"本进程首次初始化"标记; 只有第一次返回 True。
+
+        类属性而非实例属性: init_plugin 可能带新 config 重新构造实例,
+        实例属性会被重置, 类属性不会 —— 这正是区分二者的关键。
+        """
+        cls = type(self)
+        if cls._process_boot_claimed:
+            return False
+        cls._process_boot_claimed = True
+        return True
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
         self._enable = bool(config and config.get("enabled"))
@@ -77,8 +92,12 @@ class ExoticaZUserData(_PluginBase):
         self._fernet_key = str((config or {}).get("fernet_key") or "")
         self._sukebei_patch = bool((config or {}).get("sukebei_patch", False))
         if self._enable:
-            # 生命周期标记管理必须在同步段(写入/确认时点无竞态)
-            self._update_patch_lifecycle(new_process=True)
+            # 生命周期标记管理必须在同步段(写入/确认时点无竞态)。
+            # new_process 只能来自"本实例首次 init"：MP 在启动与每次保存配置/重载插件
+            # 时都会调用 init_plugin，若恒传 True 会把"插件重载"误判成"进程重启确认"，
+            # 从而在用户关闭开关后的重载中立刻清掉 patch_pending，
+            # 使橙色"等待重启"中间态消失直接落回灰色终态(关闭方向长期不生效的根因)。
+            self._update_patch_lifecycle(new_process=self._claim_process_boot())
         if self._enable and self._bin_maintain:
             # 启动自检走后台线程, 不阻塞宿主启动；失败只记日志
             threading.Thread(target=self._safe_maintain, daemon=True).start()
@@ -144,30 +163,35 @@ class ExoticaZUserData(_PluginBase):
                 return
 
             # --- 意图与磁盘一致 ---
+            # 磁盘一致 ≠ 进程已加载: 只有"本次是进程启动"才能确认运行模块真的带着
+            # 当前磁盘状态。插件重载(同进程再次 init)时不得转正, 否则会在未重启的
+            # 情况下谎报生效(开启方向)或谎报已停用(关闭方向)。
             if desired and on_disk:
-                if new_process and pending:
-                    # 本次进程启动 = 补丁已被本进程加载 = 生效确认, 清标记 + 转正
-                    mark.pop("patch_pending", None)
-                    mark["patch_desired"] = True
-                    mark["patch_effective"] = True
-                    self._save_seeding_cache(mark)
-                    return
                 mark["patch_desired"] = True
-                mark["patch_effective"] = True
+                if new_process and pending:
+                    # 进程启动 + 有待确认写入 = 本进程已加载补丁 → 生效确认
+                    mark.pop("patch_pending", None)
+                    mark["patch_effective"] = True
+                elif new_process:
+                    # 进程启动且无待确认写入 = 上次已确认生效, 保持绿
+                    mark["patch_effective"] = True
+                else:
+                    # 插件重载(非进程启动): 磁盘已写入但运行模块未加载新补丁,
+                    # 维持 effective=False → 状态卡显示橙色"等待重启"
+                    mark["patch_effective"] = False
                 self._save_seeding_cache(mark)
                 return
             # not desired and not on_disk
-            if new_process and pending:
-                # 本次进程启动确认了回滚完成, 清标记(含 ever_applied:
-                # 回滚已确认 → 回到"未启用"而非永远"等待回滚", v1.4.31 引入的缺陷)
+            mark["patch_desired"] = False
+            if new_process:
+                # 进程启动确认回滚完成: 运行模块已是干净代码 → 清标记, 回到"未启用"终态
                 mark.pop("patch_pending", None)
                 mark.pop("patch_ever_applied", None)
-                mark["patch_desired"] = False
                 mark["patch_effective"] = False
-                self._save_seeding_cache(mark)
-                return
-            mark["patch_desired"] = False
-            mark["patch_effective"] = False
+            else:
+                # 插件重载(非进程启动): 磁盘已回滚但本进程仍加载着旧补丁,
+                # 维持 pending=True → 状态卡显示橙色"等待重启"
+                mark["patch_effective"] = False
             self._save_seeding_cache(mark)
         except Exception as e:  # noqa: BLE001
             logger.error(f"ExoticaZUserData: 补丁生命周期标记异常: {e}")
@@ -567,21 +591,22 @@ class ExoticaZUserData(_PluginBase):
     def _sukebei_status_card(self) -> Dict[str, Any]:
         """域名白名单补丁状态卡: 按用户当前意图(开关)判定, 全态如实显示。"""
         root = self._mp_root()
+        mark = self._load_seeding_cache() or {}
 
         if not self._sukebei_patch:
             # ---- 用户意图: 关闭 ----
-            # patch_state 用运行模块视角即可正确区分:
-            #   磁盘已回滚 + 进程仍带补丁 → disabled_pending_restart(等待重启)
-            #   磁盘与进程都干净 → off(未启用, 终态)
-            # (ever_applied 覆盖已移除: 它在 pending 被旧版清除的场景下会把终态
-            #  永远改写成"等待回滚" —— 2026-10-12 实机钉死根因)
-            state = site_patch.patch_state(root, enabled=False) if root else "off"
+            # 关闭方向与开启方向对称: 开启靠 effective 判"刚写入待生效",
+            # 关闭靠 pending 判"已回滚待重启"。
+            # 磁盘已清后无法再反推进程内是否仍有旧补丁(读文件必然为 False),
+            # 所以中间态只认生命周期标记, 否则会直接落到"未启用"终态(2026-10-12 实机)
+            state = site_patch.patch_state(
+                root, enabled=False, pending=mark.get("patch_pending")) if root else "off"
             meta = {
                 "off": ("info", "域名白名单补丁：未启用。",
                         "如需将 Sukebei 作为独立站点使用，请在设置中开启对应开关并保存。"),
                 "disabled_pending": ("warning", "Sukebei 支持：已关闭，重启后彻底停用。",
                                      "补丁已从主项目移除，当前进程仍在使用旧代码——重启 MoviePilot 后彻底关闭。"),
-                "disabled_pending_restart": ("warning", "Sukebei 支持：已关闭，等待回滚。",
+                "disabled_pending_restart": ("warning", "Sukebei 支持：已关闭，等待重启。",
                                              "补丁回滚已排队，重启 MoviePilot 后主项目恢复原状。"),
             }.get(state, ("info", "域名白名单补丁：未启用。",
                           "如需将 Sukebei 作为独立站点使用，请在设置中开启对应开关并保存。"))
@@ -594,7 +619,6 @@ class ExoticaZUserData(_PluginBase):
         # ---- 用户意图: 开启 ----
         # 生命周期标记 effective: 只有"上次保存时已确认生效"才允许绿色,
         # 刚写入(待重启)时为 False → 状态卡如实显示中间态
-        mark = self._load_seeding_cache() or {}
         effective = mark.get("patch_effective")
         state = site_patch.patch_state(root, enabled=True, effective=effective) if root else "error"
         meta = {

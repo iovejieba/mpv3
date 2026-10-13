@@ -140,28 +140,42 @@ def _runtime_module_has_domain() -> Optional[bool]:
         return None
 
 
-def patch_state(target_root, enabled: bool, effective: Optional[bool] = None) -> str:
+def patch_state(target_root, enabled: bool, effective: Optional[bool] = None,
+                pending: Optional[bool] = None) -> str:
     """返回 UI 状态卡用的补丁状态码:
     applied / pending_restart / disabled_pending / disabled_pending_restart / off / error。
 
-    判据(三层, 2026-10-12 v2):
-      applied          = 开关开 + 磁盘有 + 运行模块有 + 生命周期标记 effective=True
-                         (三者齐才绿——缺任何一层都可能是残留/刚写入, 不得谎报)
-      pending_restart  = 开关开 + 磁盘有 + (运行模块无 或 生命周期未确认生效)
-      其余同旧语义; 开关关时探测失败归 off。
-    effective=None 时退回运行模块判据(兼容 CLI 工具)。
+    判据(2026-10-12 v3):
+      enabled 方向:
+        applied          = 磁盘有 + 运行模块有 + effective 非 False
+        pending_restart  = 磁盘有 + (运行模块无 或 effective=False)
+      disabled 方向(与 enabled 对称, 用 pending 而非 effective):
+        disabled_pending         = 磁盘仍有补丁(回滚尚未执行/未完成)
+        disabled_pending_restart = 磁盘已清 + pending=True(本进程仍加载着旧补丁, 待重启)
+        off                      = 磁盘已清 + 无 pending(重启后已干净, 终态)
+
+    要点: 磁盘已清时无法再从磁盘反推"进程内是否仍有旧补丁"
+    (读文件必然为 False), 因此关闭后的中间态只认生命周期标记 pending。
+    pending=None 时退回运行模块判据(兼容 CLI 工具)。
     """
     file_path = Path(target_root) / RELATIVE_FILE
     try:
         on_disk = domain_in_constant(file_path.read_text(encoding="utf-8"))
     except Exception:
         return "off" if not enabled else "error"
-    if not enabled and on_disk:
-        # 关闭但磁盘仍有补丁: 区分"待回滚"(运行模块还有, 重启前仍在工作)
-        # 与"已回滚待重启"(磁盘已清, 进程还加载着旧代码)
-        runtime = _runtime_module_has_domain()
-        return "disabled_pending" if runtime is True else "disabled_pending_restart"
-    if enabled and on_disk:
+    if not enabled:
+        if on_disk:
+            # 回滚尚未落到磁盘: 进程按旧代码运行, 等待回滚执行。
+            return "disabled_pending"
+        # 磁盘已清: 进程是否仍持有旧补丁只能靠 pending 标记判断
+        # (读磁盘必然 False, 无法反映进程内旧代码 —— 关闭方向无橙色中间态的根因)。
+        if pending is True:
+            return "disabled_pending_restart"
+        if pending is None and _runtime_module_has_domain() is True:
+            # 兼容 CLI: 未传 pending 时退回运行模块判据
+            return "disabled_pending_restart"
+        return "off"
+    if on_disk:
         runtime = _runtime_module_has_domain()
         if runtime is None:
             return "pending_restart"   # 宿主外: 保守不谎报
@@ -169,11 +183,7 @@ def patch_state(target_root, enabled: bool, effective: Optional[bool] = None) ->
             # 运行模块有补丁; effective 明确 False 时仍视为待重启(刚写入)
             return "applied"
         return "pending_restart"
-    if not enabled and on_disk:
-        return "orphan"
-    if enabled and not on_disk:
-        return "error"
-    return "off"
+    return "error"
 
 
 def apply_or_remove(target_root, remove: bool) -> Tuple[bool, str]:
