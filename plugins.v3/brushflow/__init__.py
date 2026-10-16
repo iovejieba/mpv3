@@ -139,6 +139,7 @@ TASK_CONFIG_FIELDS = (
     "site_hr_active",
     "site_skip_tips",
     "rss_support",
+    "custom_rss_url",
     "tag",
 )
 
@@ -164,6 +165,7 @@ LEGACY_SITE_OVERRIDE_FIELDS = {
     "site_skip_tips",
     "del_no_free",
     "rss_support",
+    "custom_rss_url",
 }
 
 GLOBAL_LIMIT_FIELDS = (
@@ -319,6 +321,7 @@ class BrushTaskConfig:
         self.smart_release_hours = self._parse_number(config.get("delete_smart_release_hours"))
         self.hr_clear_ratio_override = self._parse_number(config.get("delete_hr_clear_ratio_override"))
         self.rss_support = bool(config.get("rss_support", False))
+        self.custom_rss_url = self._clean_text(config.get("custom_rss_url"))
         self.tag = self._clean_text(config.get("tag"))
 
     @property
@@ -364,7 +367,7 @@ class BrushFlow(_PluginBase):
     plugin_desc = "多站点刷流三引擎聚合：策略线内置 ExoticaZ 等全站 H&R 站点策略（官方公式豁免、服务器账本镜像、做种窗口红区）；规则线自定义达标条件即删；智能线学习评分与容量闭环；统一智能选种、达标即释放与下载健康。"
     plugin_icon = "brush-flow.png"
     plugin_version = __version__
-    plugin_author = "jxxghp,InfinityPacer,Seed680,iovejieba"
+    plugin_author = "jxxghp,InfinityPacer,Seed680,BBin17,iovejieba"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
     plugin_order = 21
@@ -1614,6 +1617,42 @@ class BrushFlow(_PluginBase):
         }
         self._repository.prepend_bounded(task_id, "runs", stored_report, self.MAX_RUN_HISTORY)
 
+    def _build_ledger(self) -> Dict[str, Any]:
+        """刷流总账统计（9.9.8 纯插件口径）：托管种子的累计上传、在管/已删颗数与释放空间。
+
+        60 秒 TTL 缓存——聚合需全量读取每个任务的 torrents/archived。
+        """
+        cached = getattr(self, "_ledger_cache", None)
+        now_ts = time.time()
+        if cached and now_ts - float(cached.get("at") or 0) < 60:
+            return cached["data"]
+        brush_uploaded = 0
+        active_count = deleted_count = pending_archive = 0
+        released_bytes = 0
+        for task_id in self._task_configs:
+            torrents = self._get_task_data(task_id, "torrents") or {}
+            archived = self._get_task_data(task_id, "archived") or {}
+            for row in torrents.values():
+                brush_uploaded += float(row.get("uploaded") or 0)
+                if row.get("deleted"):
+                    deleted_count += 1
+                    pending_archive += 1
+                    if row.get("delete_data"):
+                        released_bytes += float(row.get("size") or 0)
+                else:
+                    active_count += 1
+            for row in archived.values():
+                brush_uploaded += float(row.get("uploaded") or 0)
+        data = {
+            "brush_uploaded": brush_uploaded,
+            "active_count": active_count,
+            "deleted_count": deleted_count,
+            "pending_archive": pending_archive,
+            "released_bytes": released_bytes,
+        }
+        self._ledger_cache = {"at": now_ts, "data": data}
+        return data
+
     def _build_status_data(self) -> Dict[str, Any]:
         """组装工作台总览、任务摘要和可选站点下载器"""
         site_user_data = (
@@ -1652,6 +1691,7 @@ class BrushFlow(_PluginBase):
             "show_sidebar_nav": self._show_sidebar_nav,
             "signin": self._build_signin_status(),
             **{field: getattr(self, f"_{field}", None) for field in GLOBAL_LIMIT_FIELDS},
+            "ledger": self._build_ledger(),
             "summary": aggregate,
             "tasks": task_rows,
             "options": {"sites": site_options, "downloaders": downloader_options},
@@ -2423,6 +2463,40 @@ class BrushFlow(_PluginBase):
         if task and self.get_state() and task.enabled:
             self._submit_task_operation(task.id, "brush", background=False)
 
+    def __fetch_custom_rss(self, site: Any, rss_url: str) -> List[Any]:
+        """拉取自定义 RSS 地址并组装站点候选（9.9.8）。
+        与 TorrentsChain.rss 同字段口径（title/enclosure/page_url/size/pubdate），
+        站点配置（cookie/ua/proxy）沿用绑定站点，确保下载种子时可复用站点凭证。"""
+        rss_items = RssHelper().parse(
+            rss_url,
+            True if getattr(site, "proxy", False) else False,
+            timeout=30,
+            ua=getattr(site, "ua", None),
+        )
+        if rss_items is None:
+            logger.error(f"自定义 RSS 地址未获取到数据：{rss_url}")
+            return []
+        ret_torrents: List[Any] = []
+        for item in rss_items:
+            if not item.get("title"):
+                continue
+            ret_torrents.append(TorrentInfo(
+                site=site.id,
+                site_name=site.name,
+                site_cookie=site.cookie,
+                site_ua=site.ua or "",
+                site_proxy=site.proxy,
+                site_order=site.pri,
+                site_downloader=site.downloader,
+                title=item.get("title"),
+                description=item.get("description"),
+                enclosure=item.get("enclosure"),
+                page_url=item.get("link"),
+                size=item.get("size"),
+                pubdate=item["pubdate"].strftime("%Y-%m-%d %H:%M:%S") if item.get("pubdate") else None,
+            ))
+        return ret_torrents
+
     def _run_brush(self, task: BrushTaskConfig, report: dict) -> None:
         """在已绑定任务上下文中执行刷流核心流程"""
         if not self._validate_task_reference(task) or not self.downloader:
@@ -2514,7 +2588,15 @@ class BrushFlow(_PluginBase):
         # 全站 H&R 站点（如 ExoticaZ）由删种侧站点策略按公式豁免兜底，
         # 选种侧不再按 H&R 一票否决，否则此类站点永远没有候选。
         site_hr_rule = resolve_rule(getattr(site, "domain", None))
-        torrents = TorrentsChain().rss(domain=site.domain) if task.rss_support else TorrentsChain().browse(domain=site.domain)
+        if task.rss_support:
+            custom_url = getattr(task, "custom_rss_url", None)
+            if custom_url:
+                # 自定义 RSS 地址（9.9.8）：RssHelper 直取并按 MP 相同字段组装候选
+                torrents = self.__fetch_custom_rss(site=site, rss_url=custom_url)
+            else:
+                torrents = TorrentsChain().rss(domain=site.domain)
+        else:
+            torrents = TorrentsChain().browse(domain=site.domain)
         if not torrents:
             report["result"] = "no_candidates"
             return

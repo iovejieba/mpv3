@@ -55,6 +55,8 @@ class CapacityConfig(BaseModel):
 class SelectionConfig(BaseModel):
     enabled: bool = True
     source: Literal["page", "rss"] = "page"
+    # RSS 自定义地址（9.9.8）：留空走站点管理内的 RSS 地址；填写则刷流取种用此地址
+    custom_rss_url: Optional[str] = None
     promotion: Literal["all", "free", "2xfree"] = "free"
     exclude_hr: bool = True
     site_hr_active: bool = False
@@ -273,6 +275,7 @@ class TaskConfigV9(BaseModel):
             "site_hr_active": self.selection.site_hr_active,
             "except_subscribe": self.selection.exclude_subscriptions,
             "rss_support": self.selection.source == "rss",
+        "custom_rss_url": self.selection.custom_rss_url,
             "size": size,
             "seeder": self.selection.seeder_range,
             "pubtime": pubtime,
@@ -406,6 +409,7 @@ def migrate_v8_task(source: Mapping[str, Any], now: Optional[float] = None) -> T
         selection=SelectionConfig(
             enabled=bool(source.get("smart_selection_enabled", True)),
             source="rss" if source.get("rss_support") else "page",
+        custom_rss_url=source.get("custom_rss_url"),
             promotion=source.get("freeleech") or "all",
             exclude_hr=source.get("hr", "yes") == "yes",
             site_hr_active=bool(source.get("site_hr_active", False)),
