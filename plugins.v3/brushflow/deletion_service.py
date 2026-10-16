@@ -535,6 +535,7 @@ class DeletionService:
         if not pending:
             return
         snapshot = self.adapter.snapshot()
+        now = self.clock()
         for operation in pending:
             changed = False
             for item in operation["items"]:
@@ -543,6 +544,18 @@ class DeletionService:
                     self._settle(item, operation["operation_id"])
                     self.audit({"kind": "deletion_reconciled", "operation_id": operation["operation_id"], "item": deepcopy(item)})
                     changed = True
+                # pending 超时收口（9.10.5）：请求超过 24 小时未确认且种子仍在下载器
+                # （remove 未生效或丢失）→ 解除卡死状态允许重新评估提删。防重复删除的
+                # 保守设计保留（24h 内绝不重发）；没有收口时种子会永久卡在
+                # previous_request_unconfirmed（实机案例：删除提交撞上断电）。
+                elif item.get("state") in UNRESOLVED_ITEMS:
+                    planned_at = float(item.get("planned_at") or item.get("at") or 0)
+                    if planned_at and now - planned_at > 24 * 3600:
+                        item["state"] = "failed"
+                        item["reason_codes"] = list(dict.fromkeys(
+                            list(item.get("reason_codes") or []) + ["previous_request_unconfirmed"]))
+                        item["note"] = "删除请求超过 24 小时未确认且种子仍在下载器，已解除卡死等待重新评估"
+                        changed = True
             if changed:
                 self.operations.update(self.task_id, operation["operation_id"], items=operation["items"], **self.result_summary(operation["items"]))
 
