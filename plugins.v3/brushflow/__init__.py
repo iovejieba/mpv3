@@ -368,7 +368,7 @@ class BrushFlow(_PluginBase):
     plugin_icon = "brush-flow.png"
     plugin_version = __version__
     plugin_author = "jxxghp,InfinityPacer,Seed680,BBin17,iovejieba"
-    author_url = "https://github.com/InfinityPacer"
+    author_url = "https://github.com/iovejieba/mpv3"
     plugin_config_prefix = "brushflow_"
     plugin_order = 21
     auth_level = 2

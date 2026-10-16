@@ -544,13 +544,13 @@ class DeletionService:
                     self._settle(item, operation["operation_id"])
                     self.audit({"kind": "deletion_reconciled", "operation_id": operation["operation_id"], "item": deepcopy(item)})
                     changed = True
-                # pending 超时收口（9.10.5）：请求超过 24 小时未确认且种子仍在下载器
-                # （remove 未生效或丢失）→ 解除卡死状态允许重新评估提删。防重复删除的
-                # 保守设计保留（24h 内绝不重发）；没有收口时种子会永久卡在
-                # previous_request_unconfirmed（实机案例：删除提交撞上断电）。
+                # pending 超时收口（9.10.5/9.10.6）：请求超过 2 小时未确认且种子仍在下载器
+                # （remove 未生效或丢失）→ 解除卡死状态允许重新评估提删。qB 确认移除是
+                # 秒级的，2 小时已远超正常确认周期。无时间戳的条目不收口（无法判定提交
+                # 时刻；reconcile 永不重发是铁律，无时间戳条目保持 pending 不阻塞他者）。
                 elif item.get("state") in UNRESOLVED_ITEMS:
                     planned_at = float(item.get("planned_at") or item.get("at") or 0)
-                    if planned_at and now - planned_at > 24 * 3600:
+                    if planned_at and now - planned_at > 2 * 3600:
                         item["state"] = "failed"
                         item["reason_codes"] = list(dict.fromkeys(
                             list(item.get("reason_codes") or []) + ["previous_request_unconfirmed"]))
