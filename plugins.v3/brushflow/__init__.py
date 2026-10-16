@@ -3175,6 +3175,11 @@ class BrushFlow(_PluginBase):
                                               plan["selection"], plan["learning"], torrent_tasks)
             # Observation gating may have changed after the safety audit.
             cleanup = self._deletion_service(task.id)
+        elif getattr(task, "delete_engine", None) == "hr_policy":
+            # 策略线 recovered 重评（9.11.0）：回收标记借用了 smart_candidates 存储，
+            # 但重评此前被 smart_enabled 门挡住——策略线任务的 recovered 永不解除
+            # （实机案例 IPVR-388）。回收原因消失即解除，与 9.10.8 的滚动观察语义一致。
+            self._recover_hr_policy_candidates(task.id, plan["observations"])
         regular = plan["items"]
         invalid_items, working_domains = [], set()
         if task.invalid_seed_cleanup_enabled:
@@ -3486,6 +3491,42 @@ class BrushFlow(_PluginBase):
         if observation.get("active_peers") is not None and float(observation.get("active_peers") or 0) > 0:
             reasons.append("active_connection")
         return reasons
+
+    def _recover_hr_policy_candidates(self, task_id: str, observations: List[dict]) -> None:
+        """策略线 recovered 候选的滚动重评（9.11.0）。
+
+        回收标记借用了 smart_candidates 存储，但重评此前只对 smart 任务运行——
+        策略线任务的 recovered 永不解除（实机案例 IPVR-388）。回收原因消失
+        （挂账需求清零且上传增量归零）即解除；observation 缺失时保持保护
+        （fail-closed）；解除后下一轮删种计划即可重新收录该种子。
+        """
+        now = time.time()
+        candidates = self._get_task_data(task_id, "smart_candidates") or {}
+        if not isinstance(candidates, dict) or not any(
+            row.get("recovered") for row in candidates.values()
+        ):
+            return
+        observations_by_hash = {str(row.get("hash") or ""): row for row in observations}
+        changed = False
+        for torrent_hash, candidate in candidates.items():
+            if not candidate.get("recovered"):
+                continue
+            observation = observations_by_hash.get(torrent_hash)
+            if observation is None:
+                continue
+            still_uploading = bool(
+                float(observation.get("upload_speed") or 0) > 0
+                or float(observation.get("upload_delta_since_check") or 0) > 0)
+            still_demand = bool(observation.get("leechers") is not None
+                                and float(observation.get("leechers") or 0) > 0)
+            if not still_uploading and not still_demand:
+                candidate.update({"recovered": False, "recovered_at": None,
+                                  "recovery_reason": None})
+                changed = True
+                logger.info(f"策略线任务回收保护解除：{candidate.get('title') or torrent_hash}"
+                            "（挂账需求与上传增量均已消失，重新参与评估）")
+        if changed:
+            self._save_task_data(task.id, "smart_candidates", candidates)
 
     def _update_smart_strategy_state(
         self,
