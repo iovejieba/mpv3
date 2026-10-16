@@ -3503,21 +3503,26 @@ class BrushFlow(_PluginBase):
             candidates = {}
         observations_by_hash = {str(row.get("hash") or ""): row for row in observations}
         for torrent_hash, candidate in list(candidates.items()):
-            # recovered 重评（9.10.8）：回收保护是滚动观察——每轮检查重新审视，
-            # 回收原因消失（上传增量归零且挂账需求清零）即自动解除，种子重新
-            # 进入正常评估。修复前 recovered 为一次性终身标记（实机案例：
-            # IPVR-388 停电恢复期被 trusted_demand 回收后永久退出候选池）。
+            # recovered 重评（9.10.8→9.10.9 修正）：回收保护是滚动观察——按**当初的
+            # 回收原因**逐项复查，原因消失即解除。upload_delta 回收 → 看瞬时上传速度
+            # （累计 uploaded 单调递增不可作判据——9.10.8 因此永不解除，实机案例
+            # IPVR-388）；trusted_demand 回收 → 看当前 leecher 是否归零。
             # observation 缺失（种子不在本轮快照）时保持保护——数据不足不解除
             # （fail-closed，与豁免判定同哲学）。
             if candidate.get("recovered"):
                 observation = observations_by_hash.get(torrent_hash)
                 if observation is None:
                     continue
-                still_uploading = bool(
-                    float(observation.get("uploaded") or 0) > float(candidate.get("uploaded") or 0))
-                still_demand = bool(observation.get("leechers") is not None
-                                    and float(observation.get("leechers") or 0) > 0)
-                if not still_uploading and not still_demand:
+                reason = str(candidate.get("recovery_reason") or "")
+                if reason == "trusted_demand":
+                    cause_gone = not (observation.get("leechers") is not None
+                                      and float(observation.get("leechers") or 0) > 0)
+                elif reason == "upload_delta":
+                    cause_gone = not (float(observation.get("upload_speed") or 0) > 0
+                                      or float(observation.get("upload_delta_since_check") or 0) > 0)
+                else:
+                    cause_gone = True  # 未知原因不无限保护
+                if cause_gone:
                     candidate.update({"recovered": False, "recovered_at": None,
                                       "recovery_reason": None})
                 else:
