@@ -538,24 +538,27 @@ class DeletionService:
         now = self.clock()
         for operation in pending:
             changed = False
+            # 超时基准（9.10.7 修正）：items 条目没有 planned_at 字段（9.10.5/9.10.6
+            # 的收口条件因此永不触发——实机案例 IPVR-388）；改用 operation 的
+            # created_at（提交时刻，恒存在）。
+            created_at = float(operation.get("created_at") or 0)
+            stale = bool(created_at) and now - created_at > 2 * 3600
             for item in operation["items"]:
                 if item.get("state") in UNRESOLVED_ITEMS and item["hash"] not in snapshot:
                     item["state"] = "confirmed_removed"
                     self._settle(item, operation["operation_id"])
                     self.audit({"kind": "deletion_reconciled", "operation_id": operation["operation_id"], "item": deepcopy(item)})
                     changed = True
-                # pending 超时收口（9.10.5/9.10.6）：请求超过 2 小时未确认且种子仍在下载器
-                # （remove 未生效或丢失）→ 解除卡死状态允许重新评估提删。qB 确认移除是
-                # 秒级的，2 小时已远超正常确认周期。无时间戳的条目不收口（无法判定提交
-                # 时刻；reconcile 永不重发是铁律，无时间戳条目保持 pending 不阻塞他者）。
-                elif item.get("state") in UNRESOLVED_ITEMS:
-                    planned_at = float(item.get("planned_at") or item.get("at") or 0)
-                    if planned_at and now - planned_at > 2 * 3600:
-                        item["state"] = "failed"
-                        item["reason_codes"] = list(dict.fromkeys(
-                            list(item.get("reason_codes") or []) + ["previous_request_unconfirmed"]))
-                        item["note"] = "删除请求超过 24 小时未确认且种子仍在下载器，已解除卡死等待重新评估"
-                        changed = True
+                # pending 超时收口（9.10.5→9.10.7 修正基准）：请求提交超过 2 小时未确认
+                # 且种子仍在下载器（remove 未生效或丢失）→ 解除卡死状态允许重新评估提删。
+                # qB 确认移除是秒级的，2 小时已远超正常确认周期。reconcile 永不重发
+                # 删除请求的铁律不变——收口只解除卡死，重新删除仍走全量评估。
+                elif stale and item.get("state") in UNRESOLVED_ITEMS:
+                    item["state"] = "failed"
+                    item["reason_codes"] = list(dict.fromkeys(
+                        list(item.get("reason_codes") or []) + ["previous_request_unconfirmed"]))
+                    item["note"] = "删除请求超过 2 小时未确认且种子仍在下载器，已解除卡死等待重新评估"
+                    changed = True
             if changed:
                 self.operations.update(self.task_id, operation["operation_id"], items=operation["items"], **self.result_summary(operation["items"]))
 

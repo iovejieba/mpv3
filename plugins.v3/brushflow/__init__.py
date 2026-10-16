@@ -3503,7 +3503,28 @@ class BrushFlow(_PluginBase):
             candidates = {}
         observations_by_hash = {str(row.get("hash") or ""): row for row in observations}
         for torrent_hash, candidate in list(candidates.items()):
-            if candidate.get("recovered") or now - float(candidate.get("planned_at") or 0) > 30 * 86400:
+            # recovered 重评（9.10.8）：回收保护是滚动观察——每轮检查重新审视，
+            # 回收原因消失（上传增量归零且挂账需求清零）即自动解除，种子重新
+            # 进入正常评估。修复前 recovered 为一次性终身标记（实机案例：
+            # IPVR-388 停电恢复期被 trusted_demand 回收后永久退出候选池）。
+            # observation 缺失（种子不在本轮快照）时保持保护——数据不足不解除
+            # （fail-closed，与豁免判定同哲学）。
+            if candidate.get("recovered"):
+                observation = observations_by_hash.get(torrent_hash)
+                if observation is None:
+                    continue
+                still_uploading = bool(
+                    float(observation.get("uploaded") or 0) > float(candidate.get("uploaded") or 0))
+                still_demand = bool(observation.get("leechers") is not None
+                                    and float(observation.get("leechers") or 0) > 0)
+                if not still_uploading and not still_demand:
+                    candidate.update({"recovered": False, "recovered_at": None,
+                                      "recovery_reason": None})
+                else:
+                    candidate["uploaded"] = float(observation.get("uploaded") or 0)
+                # 回收种子本轮跳过重新规划（保持除名状态），下轮重评
+                continue
+            if now - float(candidate.get("planned_at") or 0) > 30 * 86400:
                 continue
             observation = observations_by_hash.get(torrent_hash)
             if not observation or now - float(candidate.get("planned_at") or 0) > 24 * 3600:
