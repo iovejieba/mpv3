@@ -171,6 +171,7 @@ GLOBAL_LIMIT_FIELDS = (
     "global_maxdlcount",
     "global_maxupspeed",
     "global_maxdlspeed",
+    "auto_archive_days",  # 9.9.0 全局化：记录归档天数提升为全局设置（任务级字段退役）
 )
 
 class BrushTaskConfig:
@@ -3785,7 +3786,19 @@ class BrushFlow(_PluginBase):
             added_on = torrent.get("added_on") or 0
             last_activity = torrent.get("last_activity") or 0
             completion_on = torrent.get("completion_on") or 0
-            dltime = now_timestamp - added_on if added_on > 0 else 0
+            # dltime 口径（9.9.0 同步上游 6.1.3）：下载耗时 = 完成前的实际耗时。
+            # 完成种子取 added_on→completion_on（完成的时刻），此后不再增长——
+            # 否则"下载超时"类规则会对已完成种子永久误判（上游 6.1.3 同源 bug）。
+            progress_raw = torrent.get("progress")
+            torrent_completed = bool(
+                torrent.get("state") in {"uploading", "stalledUP", "stoppedUP", "pausedUP", "queuedUP", "forcedUP"}
+                or (progress_raw is not None and float(progress_raw) >= 1)
+                or (completion_on > 0)
+            )
+            if torrent_completed and completion_on > 0:
+                dltime = max(completion_on - added_on, 0) if added_on > 0 else 0
+            else:
+                dltime = now_timestamp - added_on if added_on > 0 else 0
             # Completion wall time includes pauses; only actual reported seeding
             # duration is admissible evidence for a site's minimum seed time.
             seeding_time = torrent.get("seeding_time")
@@ -3831,7 +3844,11 @@ class BrushFlow(_PluginBase):
             added_on = int(added_date.timestamp()) if added_date and added_date.timestamp() > 0 else 0
             activity_timestamp = int(activity_date.timestamp()) if activity_date and activity_date.timestamp() > 0 else 0
             seeding_time = getattr(torrent, "seconds_seeding", None)
-            dltime = now_timestamp - added_on if added_on else 0
+            # dltime 口径同 qB 分支（9.9.0）：完成种子冻结在完成时刻（progress≥1）
+            if progress >= 1:
+                dltime = 0
+            else:
+                dltime = now_timestamp - added_on if added_on else 0
             iatime = now_timestamp - activity_timestamp if activity_timestamp else 0
             total_size = getattr(torrent, "total_size", 0) or 0
             progress = getattr(torrent, "progress", 0) or 0
@@ -4077,12 +4094,12 @@ class BrushFlow(_PluginBase):
         )
 
     def __auto_archive_tasks(self, torrent_tasks: Dict[str, dict]) -> None:
-        """按当前任务保留天数归档已删除种子记录"""
-        task = self._get_task_config()
-        if not task or not task.auto_archive_days or task.auto_archive_days <= 0:
+        """按全局保留天数归档已删除种子记录（9.9.0 全局化：任务级字段退役）"""
+        global_days = getattr(self, "_auto_archive_days", None)
+        if not global_days or float(global_days) <= 0:
             return
         archived_tasks: Dict[str, dict] = self._current_task_data("archived", {})
-        threshold = float(task.auto_archive_days) * 86400
+        threshold = float(global_days) * 86400
         now_timestamp = time.time()
         archive_hashes = []
         for torrent_hash, item in torrent_tasks.items():

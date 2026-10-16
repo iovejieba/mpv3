@@ -34,12 +34,13 @@ class BrushFlowSettingsPayload(BaseModel):
     global_maxdlcount: Optional[int] = Field(None, gt=0)
     global_maxupspeed: Optional[float] = Field(None, gt=0)
     global_maxdlspeed: Optional[float] = Field(None, gt=0)
+    auto_archive_days: Optional[int] = Field(None, ge=1)  # 9.9.0 归档全局化
     signin_enabled: bool = False
     signin_notify: bool = True
     signin_cron: Optional[str] = "17 7 * * *"
     signin_sites: List[int] = Field(default_factory=list)
 
-    @field_validator("global_disksize", "global_maxdlcount", "global_maxupspeed", "global_maxdlspeed", mode="before")
+    @field_validator("global_disksize", "global_maxdlcount", "global_maxupspeed", "global_maxdlspeed", "auto_archive_days", mode="before")
     @classmethod
     def normalize_limits(cls, value):
         return _positive_or_none(value)
