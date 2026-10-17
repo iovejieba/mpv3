@@ -1,4 +1,5 @@
 import base64
+import copy
 import json
 import re
 import threading
@@ -15,7 +16,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import Query
 
 from .host import (
-    schemas, register_plugin_api, TorrentsChain, settings, MediaInfo, Event, eventmanager,
+    schemas, register_plugin_api, DownloadChain, TorrentsChain, settings, MediaInfo, Event, eventmanager,
     MetaInfo, SiteOper, SubscribeOper, DownloaderHelper, SitesHelper, ThreadHelper, logger,
     Qbittorrent, Transmission, _PluginBase, Scheduler, MediaType, NotificationType,
     ServiceInfo, TorrentInfo, EventType, RequestUtils, StringUtils,
@@ -3517,8 +3518,13 @@ class BrushFlow(_PluginBase):
             still_uploading = bool(
                 float(observation.get("upload_speed") or 0) > 0
                 or float(observation.get("upload_delta_since_check") or 0) > 0)
-            still_demand = bool(observation.get("leechers") is not None
-                                and float(observation.get("leechers") or 0) > 0)
+            # 需求强度判据（9.11.2）：与删种保护线同源——名册挂名但 24h 内无
+            # 下载量级行为的僵尸意向不再维持回收保护。
+            if observation.get("real_demand") is not None:
+                still_demand = bool(observation.get("real_demand"))
+            else:
+                still_demand = bool(observation.get("leechers") is not None
+                                    and float(observation.get("leechers") or 0) > 0)
             if not still_uploading and not still_demand:
                 candidate.update({"recovered": False, "recovered_at": None,
                                   "recovery_reason": None})
@@ -3579,7 +3585,10 @@ class BrushFlow(_PluginBase):
                 candidate.update({"recovered": True, "recovered_at": now, "recovery_reason": "upload_delta"})
                 continue
             demand_values: List[bool] = []
-            if observation.get("leechers") is not None:
+            if observation.get("real_demand") is not None:
+                # 需求强度判据（9.11.2）：与删种保护线同源——僵尸意向不再触发回收。
+                demand_values.append(bool(observation.get("real_demand")))
+            elif observation.get("leechers") is not None:
                 demand_values.append(float(observation.get("leechers") or 0) > 0)
             for row in sorted(
                 (item for item in history if str(item.get("hash") or "") == torrent_hash),
@@ -3848,6 +3857,16 @@ class BrushFlow(_PluginBase):
             return None
         if task.site_skip_tips and isinstance(torrent_content, str):
             torrent_content = self.__reset_download_url(torrent_content, torrent.site)
+        if isinstance(torrent_content, str) and not torrent_content.startswith("magnet"):
+            # 站点可能返回登录页或首次下载确认页（同步上游 6.1.4）；交给主程序下载链
+            # 校验并完成确认，避免把 HTML 传给下载器。
+            download_torrent = copy.copy(torrent)
+            download_torrent.enclosure = torrent_content
+            download_torrent.site_cookie = cookies
+            torrent_content, _, _ = DownloadChain().download_torrent(download_torrent)
+            if not torrent_content:
+                logger.error(f"刷流任务 [{task.name}] 获取有效种子文件失败：{torrent.title}")
+                return None
         downloader = self.downloader
         service = self.service_info
         if not downloader or not service:
@@ -3857,12 +3876,6 @@ class BrushFlow(_PluginBase):
             up_limit = up_speed * 1024 if up_speed else None
             down_limit = down_speed * 1024 if down_speed else None
             random_tag = StringUtils.generate_random_str(10)
-            if isinstance(torrent_content, str) and not torrent_content.startswith("magnet"):
-                response = RequestUtils(cookies=cookies, proxies=proxies, ua=torrent.site_ua).get_res(
-                    url=torrent_content
-                )
-                if response and response.ok:
-                    torrent_content = response.content
             if not downloader.add_torrent(
                 content=torrent_content,
                 download_dir=task.save_path,
@@ -3878,12 +3891,6 @@ class BrushFlow(_PluginBase):
                 logger.error(f"刷流任务 [{task.name}] 获取种子 Hash 失败")
             return torrent_hash
         if downloader_helper.is_downloader("transmission", service=service):
-            if isinstance(torrent_content, str) and not torrent_content.startswith("magnet"):
-                response = RequestUtils(cookies=cookies, proxies=proxies, ua=torrent.site_ua).get_res(
-                    url=torrent_content
-                )
-                if response and response.ok:
-                    torrent_content = response.content
             added_torrent = downloader.add_torrent(
                 content=torrent_content,
                 download_dir=task.save_path,

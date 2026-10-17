@@ -13,6 +13,7 @@ from dataclasses import replace
 import math
 import time
 import uuid
+from typing import Mapping, Sequence
 
 from .decision import (
     DecisionResult, SmartPolicy, capacity_recovery_state, deletion_budget,
@@ -26,6 +27,42 @@ from .hr_strategy import SiteHRRule, torrent_id_from_path
 
 GIB = 1024**3
 PREVIEW_TTL = 300
+
+# 真实需求强度门槛（9.11.2）：名册 leecher（num_incomplete）只是"意向"——挂名
+# 僵尸可能永远不连接（实机案例 IPVR-388：名册恒挂 1 人五天，会话累计仅 426.9 KiB），
+# 按"意向"拦截会造成永不解除的死锁。真下载者的上传增量是百 MiB 级/轮，握手/
+# 元数据交换级噪声只有几十 KiB——量级差 3~4 个数量级，中间是空带：
+DEMAND_PROOF_MIN_BYTES = 1024 * 1024   # 单轮有效需求样本的绝对下限（1 MiB）
+DEMAND_PROOF_RATIO = 0.001             # 相对门槛：种子体积 × 0.1%
+DEMAND_PROOF_WINDOW = 24 * 3600        # 行为证据滚动窗口
+
+
+def demand_proof_threshold(total_size: float) -> float:
+    """单轮上传增量达到该值才计为一次有效需求样本。"""
+    return max(float(total_size or 0) * DEMAND_PROOF_RATIO, DEMAND_PROOF_MIN_BYTES)
+
+
+def real_upload_evidence(observation: Mapping, snapshots: Sequence[Mapping], now: float) -> bool:
+    """24h 滚动窗口内存在"量级在下载"的上传增量（真实需求的行为佐证）。
+
+    判据与瞬时抖动解耦：短连/换 IP/检查撞秒产生的小于门槛的增量一律不算，
+    真下载者第一轮就会留下远超门槛的增量。数据源为 learning snapshots
+    （逐轮 uploaded 记录，全部引擎都在写入），零新增观测成本。
+    """
+    threshold = demand_proof_threshold(number(observation.get("total_size") or observation.get("size")))
+    previous_uploaded = None
+    for row in sorted(snapshots, key=lambda item: number(item.get("at"))):
+        at = number(row.get("at"))
+        if at <= 0 or now - at > DEMAND_PROOF_WINDOW:
+            continue
+        uploaded = number(row.get("uploaded"), -1.0)
+        if uploaded < 0:
+            continue
+        if previous_uploaded is not None and uploaded - previous_uploaded >= threshold:
+            return True
+        previous_uploaded = uploaded
+    # 当轮增量（上一轮检查到现在的差值）也纳入证据
+    return number(observation.get("upload_delta_since_check")) >= threshold
 
 
 def number(value, default=0.0):
@@ -101,8 +138,15 @@ def hard_safety_reasons(observation: dict, policy: SmartPolicy) -> list[str]:
         reasons.append("real_upload")
     if number(observation["active_peers"]) > 0:
         reasons.append("active_connection")
-    if number(observation.get("leechers")) > 0 and number(observation.get("demand_confirmations")) >= policy.demand_confirmations:
-        reasons.append("trusted_active_demand")
+    # 需求保护线（9.11.2 换判据）：只有"名册挂名 + 24h 内下载量级行为"才算真实
+    # 需求；纯意向挂账（名册 leecher 从不连接/只握手）不再构成永久拦截。
+    # demand_confirmations 缺失时退回旧判据（兼容手工构造的 observation）。
+    if number(observation.get("leechers")) > 0:
+        if observation.get("real_demand") is not None:
+            if bool(observation.get("real_demand")) and number(observation.get("demand_confirmations")) >= policy.demand_confirmations:
+                reasons.append("trusted_active_demand")
+        elif number(observation.get("demand_confirmations")) >= policy.demand_confirmations:
+            reasons.append("trusted_active_demand")
     return reasons
 
 
@@ -186,6 +230,11 @@ class DeletionService:
             if raw_hr:
                 self._apply_site_hr_policy(info)
             info["upload_delta_since_check"] = max(number(info.get("uploaded")) - number(previous.get("uploaded"), number(info.get("uploaded"))), 0)
+            # 真实需求判据（9.11.2）：名册意向（leechers>0）+ 24h 内量级行为佐证。
+            # 名册恒挂但从不产生下载量级增量的僵尸不再构成拦截（IPVR-388 案例）。
+            info["real_demand"] = bool(
+                number(info.get("leechers"), 0) > 0
+                and real_upload_evidence(info, snapshots_by_hash[torrent_hash], now))
             demands = [number(info.get("leechers")) > 0] if info.get("leechers") is not None else []
             # Tracker evidence older than the continuity window is not reused.
             demands.extend(number(row.get("leechers")) > 0 for row in history
@@ -319,8 +368,16 @@ class DeletionService:
                                  deleted_count=0 if relax_limits and manual else len(ledger),
                                  deleted_bytes=0 if relax_limits and manual else sum(number(row.get("size")) for row in ledger))
         blocked = []
+        # 豁免即释放（9.11.2）：策略站点豁免达标 + 开关开启时，活动性三线
+        # （real_upload/active_connection/trusted_active_demand）对豁免种子让位。
+        # 其余事实线（未完成/最低保种/标签/HR/管理标签/pending）原样生效。
+        activity_exempt = bool(
+            self.policy.rules_mode == "hr_policy" and self.policy.release_on_maturity)
         for observation in observations:
             reasons = hard_safety_reasons(observation, self.policy)
+            if activity_exempt and observation.get("hr_policy", {}).get("cleared") and not observation.get("hit_and_run"):
+                reasons = [reason for reason in reasons if reason not in {
+                    "real_upload", "active_connection", "trusted_active_demand"}]
             if observation["pending_confirmation"]:
                 reasons.append("previous_request_unconfirmed")
             if observation["management_tag_removed"]:
@@ -422,6 +479,9 @@ class DeletionService:
         items = deepcopy(items)
         if manual and (len(items) > 10 or sum(number(row.get("size")) for row in items) > number(self.document.capacity.limit_gb) * GIB * .25):
             raise OperationError("manual_limit_exceeded", "本轮不能超过10个种子或任务容量的25%")
+        # 豁免即释放（9.11.2）：与 plan() 同判据，见该处注释。
+        activity_exempt = bool(
+            self.policy.rules_mode == "hr_policy" and self.policy.release_on_maturity)
         submitted_count, submitted_bytes = 0, 0.0
         self.operations.update(self.task_id, operation_id, items=items, phase="安全复核", selected_count=len(items))
         for index, item in enumerate(items):
@@ -431,6 +491,11 @@ class DeletionService:
                 latest = self.plan(relax_limits=relax_limits, manual=manual)
                 observation = next((row for row in latest["observations"] if row["hash"] == item["hash"]), None)
                 reasons = hard_safety_reasons(observation, self.policy) if observation else ["torrent_missing"]
+                # 豁免即释放（9.11.2）：执行复核与计划层同判据——豁免达标种子的
+                # 活动性三线不再拦截，避免"计划选上、复核打回"的两层分歧。
+                if observation and activity_exempt and observation.get("hr_policy", {}).get("cleared") and not observation.get("hit_and_run"):
+                    reasons = [reason for reason in reasons if reason not in {
+                        "real_upload", "active_connection", "trusted_active_demand"}]
                 if observation and number(observation.get("uploaded")) > number(item.get("uploaded")):
                     reasons.append("real_upload")
                 if observation and number(observation.get("total_size")) != item["size"]:

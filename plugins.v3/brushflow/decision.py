@@ -178,6 +178,9 @@ class TorrentObservation:
     low_value_confirmations: Optional[int] = None
     low_value_span_minutes: float = 0.0
     capacity_pressure: float = 0.0
+    # 真实需求强度判定（9.11.2）：None = 未知（回退旧名册判据），False = 名册挂名
+    # 但 24h 内无下载量级行为佐证（僵尸意向，不再构成保护）。
+    real_demand: Optional[bool] = None
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "TorrentObservation":
@@ -220,6 +223,7 @@ class TorrentObservation:
             low_value_span_minutes=_positive(data.get("low_value_span_minutes")),
             # 容量压力允许超过 100%，供超额恢复模式区分“刚触发”与严重超额。
             capacity_pressure=max(0.0, min(_number(data.get("capacity_pressure")), 4.0)),
+            real_demand=bool(data.get("real_demand")) if data.get("real_demand") is not None else None,
         )
 
     @property
@@ -798,9 +802,14 @@ def evaluate_candidate(
         return blocked("missing_min_seed_time")
     if set(policy.excluded_tags).intersection(observation.tags):
         return blocked("excluded_tag")
-    if observation.has_real_upload:
+    # 豁免即释放（9.11.2）：策略站点 + 开关开启 = 用户宣告"服务期已满"。
+    # 活动性三线（真实上传/活动连接/挂账需求）对已豁免种子让位——义务以时长
+    # 结算，名册挂名与偶发短连不构成继续占用容量的理由（实机案例 IPVR-388）。
+    # 事实性保护（未完成/最低保种/排除标签/H&R 未豁免）保持在上方原样生效。
+    activity_exempt = policy.rules_mode == "hr_policy" and policy.release_on_maturity
+    if observation.has_real_upload and not activity_exempt:
         return blocked("real_upload")
-    if observation.active_peers is not None and observation.active_peers > 0:
+    if not activity_exempt and observation.active_peers is not None and observation.active_peers > 0:
         return blocked("active_connection")
     if not rules_active and (policy.smart_release_ratio > 0 or policy.smart_release_hours > 0):
         release_ratio = (policy.smart_release_ratio > 0 and observation.total_size > 0
@@ -814,6 +823,9 @@ def evaluate_candidate(
             )
             reason = "smart_release_ratio" if release_ratio else "smart_release_hours"
             return DecisionResult(observation.torrent_hash, "candidate", score, (reason,), contributions)
+    # 豁免即释放通道：活动线已让位，豁免种子在此直接成为候选。
+    if policy.rules_mode == "hr_policy" and policy.release_on_maturity:
+        return DecisionResult(observation.torrent_hash, "candidate", 100.0, ("hr_exempted",))
     if rules_active:
         if policy.rules_mode == "hr_policy":
             # 豁免即候选：命中策略站点的删种规则就是策略本身（共享安全线已在上方通过）
@@ -829,6 +841,9 @@ def evaluate_candidate(
         return DecisionResult(observation.torrent_hash, "blocked", 100.0, ("rules_not_met",), details)
     if policy.protect_active_demand and observation.leechers and (
         _demand_confirmations(observation, history) >= max(policy.demand_confirmations, 1)
+        # 需求强度判据（9.11.2）：observation 带 real_demand 时以行为佐证为准——
+        # 名册挂名但 24h 内无下载量级增量的僵尸意向不再拦截。
+        and (observation.real_demand is not False)
     ):
         return blocked("trusted_active_demand")
     inactive_floor = max(policy.smart_cold_inactive_minutes, policy.min_inactive_minutes)

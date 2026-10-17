@@ -7,6 +7,7 @@ Host contract CI must import this module against a pinned MoviePilot checkout.
 
 from app import schemas
 from app.api.endpoints.plugin import register_plugin_api
+from app.chain.download import DownloadChain
 from app.chain.torrents import TorrentsChain
 from app.sdk.config import settings
 from app.sdk.media import MediaInfo, MetaInfo
@@ -26,7 +27,7 @@ from app.schemas.types import EventType
 from app.sdk.utilities import StringUtils
 
 __all__ = [
-    "schemas", "register_plugin_api", "TorrentsChain", "settings", "MediaInfo", "MetaInfo",
+    "schemas", "register_plugin_api", "DownloadChain", "TorrentsChain", "settings", "MediaInfo", "MetaInfo",
     "Event", "eventmanager", "SiteOper", "SubscribeOper", "DownloaderHelper", "SitesHelper",
     "RequestUtils", "ThreadHelper", "logger", "Qbittorrent", "Transmission", "_PluginBase",
     "Scheduler", "MediaType", "NotificationType", "ServiceInfo", "TorrentInfo", "EventType", "StringUtils",
