@@ -367,8 +367,8 @@ class BrushFlow(_PluginBase):
     plugin_desc = "多站点刷流三引擎聚合：策略线内置 ExoticaZ 等全站 H&R 站点策略（官方公式豁免、服务器账本镜像、做种窗口红区）；规则线自定义达标条件即删；智能线学习评分与容量闭环；统一智能选种、达标即释放与下载健康。"
     plugin_icon = "brush-flow.png"
     plugin_version = __version__
-    plugin_author = "jxxghp,InfinityPacer,Seed680,BBin17,iovejieba"
-    author_url = "https://github.com/iovejieba/mpv3"
+    plugin_author = "jxxghp,InfinityPacer,Seed680,iovejieba"
+    author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
     plugin_order = 21
     auth_level = 2
@@ -3697,10 +3697,21 @@ class BrushFlow(_PluginBase):
     ) -> None:
         """把下载器中已不存在但仍标记正常的记录更新为已删除"""
         existing_hashes = set(self.__get_all_hashes(torrents))
+        # pending（删除请求未确认）的条目不按快照缺失判死——remove 可能未生效，
+        # 由 reconcile 的超时收口负责定夺（9.11.1 修复：避免误标 deleted 形成幽灵种子）
+        pending_hashes = self._get_task_service().pending_hashes(self._get_task_config().id)
         missing_hashes = [
             item for item in torrent_check_hashes
             if item not in existing_hashes and not torrent_tasks[item].get("deleted")
+            and item not in pending_hashes
         ]
+        # 幽灵复活自愈（9.11.1）：曾误标 deleted 但本轮重新出现在下载器快照的记录
+        # → 撤销 deleted 标记，恢复正常管理（实机案例 IPVR-388）。
+        for torrent_hash, torrent_task in torrent_tasks.items():
+            if torrent_task.get("deleted") and torrent_hash in existing_hashes:
+                torrent_task.update({"deleted": False, "deleted_time": None})
+                logger.info(f"刷流任务记录复活：{torrent_task.get('title') or torrent_hash}"
+                            "（已误标删除但种子仍在下载器中，恢复正常管理）")
         deleted_tasks: List[dict] = []
         for torrent_hash in missing_hashes:
             torrent_task = torrent_tasks[torrent_hash]
