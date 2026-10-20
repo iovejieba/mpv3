@@ -35,10 +35,22 @@ class BrushFlowSettingsPayload(BaseModel):
     global_maxupspeed: Optional[float] = Field(None, gt=0)
     global_maxdlspeed: Optional[float] = Field(None, gt=0)
     auto_archive_days: Optional[int] = Field(None, ge=1)  # 9.9.0 归档全局化
+    notify_merge_count: Optional[int] = None  # 9.11.4 通知合并条数（None 或 <2 视为不合并逐颗推）
     signin_enabled: bool = False
     signin_notify: bool = True
     signin_cron: Optional[str] = "17 7 * * *"
     signin_sites: List[int] = Field(default_factory=list)
+
+    @field_validator("notify_merge_count", mode="before")
+    @classmethod
+    def normalize_merge_count(cls, value):
+        """小于 2 的输入（含空串/0/1）统一归 None，语义为不合并——避免 422 打断整次保存"""
+        if value in (None, ""):
+            return None
+        try:
+            return int(value) if int(value) >= 2 else None
+        except (TypeError, ValueError):
+            return None
 
     @field_validator("global_disksize", "global_maxdlcount", "global_maxupspeed", "global_maxdlspeed", "auto_archive_days", mode="before")
     @classmethod

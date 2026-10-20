@@ -175,6 +175,7 @@ GLOBAL_LIMIT_FIELDS = (
     "global_maxupspeed",
     "global_maxdlspeed",
     "auto_archive_days",  # 9.9.0 全局化：记录归档天数提升为全局设置（任务级字段退役）
+    "notify_merge_count",  # 9.11.4 全局化：加种/删种通知达到 N 条合并推送（留空=不合并）
 )
 
 class BrushTaskConfig:
@@ -2758,6 +2759,7 @@ class BrushFlow(_PluginBase):
                     "本轮自动按硬过滤 + 时序取种（智能评分仅在站点列表页来源下可用）"
                 )
         seeding_size = self.__calculate_seeding_torrents_size(torrent_tasks)
+        added_torrents = []  # 9.11.4：收集本轮新增，循环结束按合并条数决定逐颗或合并推送
         for torrent in torrents:
             passed, reason = self.__evaluate_pre_conditions_for_brush(include_network_conditions=False)
             if not passed:
@@ -2798,9 +2800,10 @@ class BrushFlow(_PluginBase):
                 },
             )
             logger.info(f"刷流任务 [{task.name}] 新增种子：{torrent.title}|{torrent.description}")
-            self.__send_add_message(torrent)
+            added_torrents.append(torrent)
             if selection_limit is not None and report["added_count"] >= selection_limit:
                 break
+        self.__send_add_messages(added_torrents)
         report["filtered_count"] = max(report["candidate_count"] - report["added_count"], 0)
         report["result"] = "completed"
 
@@ -3214,8 +3217,8 @@ class BrushFlow(_PluginBase):
         else:
             result = {"state": "completed", "deleted_count": 0}
         # 删种通知（9.8.3 修复）：从操作日志取本轮确认移除的种子推送。
-        # ≤5 颗逐个推（保留任务/站点/标题/原因四要素）；>5 颗汇总一条
-        # （TG 单条上限 4096 字符，长标题种子逐条推送有截断风险）。
+        # 9.11.4：少于合并条数逐颗推（保留任务/站点/标题/原因四要素）；
+        # 达到全局合并条数则汇总一条（TG 单条上限 4096 字符，长标题种子逐条推送有截断风险）。
         if result.get("deleted_count"):
             operation = self._get_task_service().get(task.id, operation_id) if operation_id else None
             removed_items = [item for item in (operation or {}).get("items", [])
@@ -3223,18 +3226,19 @@ class BrushFlow(_PluginBase):
             def _reason_of(item):
                 return ("、".join(self._smart_reason_label(code) for code in item.get("reason_codes") or [])
                         or item.get("reason") or "删种规则达标")
-            if len(removed_items) <= 5:
-                for item in removed_items:
-                    self.__send_delete_message(
-                        torrent_tasks.get(item["hash"], item), _reason_of(item),
-                    )
-            elif removed_items:
+            merge_count = self.__notify_merge_count()
+            if merge_count and len(removed_items) >= merge_count:
                 lines = [f"· {str(item.get('title') or item.get('hash'))[:60]}（{_reason_of(item)}）"
                          for item in removed_items]
                 self.__send_message(
                     "【刷流任务种子删除】",
                     f"任务：{task.name}\n本轮共删除 {len(removed_items)} 个：\n" + "\n".join(lines),
                 )
+            else:
+                for item in removed_items:
+                    self.__send_delete_message(
+                        torrent_tasks.get(item["hash"], item), _reason_of(item),
+                    )
         self._save_current_task_data("smart_plan", {row["hash"]: "低价值候选，等待额度与安全复核" for row in regular})
         # Read the settled records, not the stale pre-deletion in-memory snapshot.
         torrent_tasks = self._current_task_data("torrents", {})
@@ -3462,8 +3466,18 @@ class BrushFlow(_PluginBase):
 
 
     @staticmethod
-    def _smart_runtime_safety_reasons(task: BrushTaskConfig, observation: dict) -> List[str]:
-        """在调用下载器前独立复核硬安全线，防止评分回归导致误删。"""
+    def _smart_runtime_safety_reasons(
+        task: BrushTaskConfig,
+        observation: dict,
+        *,
+        hr_activity_exempt: bool = False,
+    ) -> List[str]:
+        """在调用下载器前独立复核硬安全线，防止评分回归导致误删。
+
+        hr_activity_exempt（9.11.5）：豁免即释放开启时，与计划层/决策链/执行层
+        同判据——已豁免种子（cleared=true）的活动性三线（真实上传/活动连接）
+        让位，避免第四道复核误判合法豁免候选并误拉影子期。事实线永不旁路。
+        """
         reasons: List[str] = []
         total_size = float(observation.get("total_size") or observation.get("size") or 0)
         downloaded = float(observation.get("downloaded") or 0)
@@ -3485,12 +3499,14 @@ class BrushFlow(_PluginBase):
         excluded = {item.strip() for item in str(task.delete_except_tags or "").split(",") if item.strip()}
         if tags.intersection(excluded):
             reasons.append("excluded_tag")
-        if float(observation.get("upload_speed") or 0) > 0 or float(
-            observation.get("upload_delta_since_check") or 0
-        ) > 0:
-            reasons.append("real_upload")
-        if observation.get("active_peers") is not None and float(observation.get("active_peers") or 0) > 0:
-            reasons.append("active_connection")
+        if not (hr_activity_exempt and (observation.get("hr_policy") or {}).get("cleared")
+                and not observation.get("hit_and_run")):
+            if float(observation.get("upload_speed") or 0) > 0 or float(
+                observation.get("upload_delta_since_check") or 0
+            ) > 0:
+                reasons.append("real_upload")
+            if observation.get("active_peers") is not None and float(observation.get("active_peers") or 0) > 0:
+                reasons.append("active_connection")
         return reasons
 
     def _recover_hr_policy_candidates(self, task_id: str, observations: List[dict]) -> None:
@@ -3624,12 +3640,19 @@ class BrushFlow(_PluginBase):
         false_positive_count = sum(1 for row in candidates.values() if row.get("recovered"))
         false_positive_rate = false_positive_count / candidate_count if candidate_count else 0.0
         previous = self._get_task_data(task.id, "strategy_state") or {}
+        # 影子守门器与活动线旁路（9.11.5）：豁免即释放下，已豁免种子带着活动信号
+        # 进入 selected 是合法语义（计划层/决策链/执行层三处已同判据放行）——
+        # 本守门器是第四道复核，缺同判据会把合法豁免候选误判为硬安全违规，
+        # 误拉 24h 影子期导致豁免即释放失效（9.11.4 实机案例：EXO 任务被误触发）。
+        hr_activity_exempt = bool(
+            task.delete_engine == "hr_policy" and task.release_on_maturity)
         new_safety_violations = sum(
             1
             for result in selection.selected
             if self._smart_runtime_safety_reasons(
                 task,
                 observations_by_hash.get(result.torrent_hash, {}),
+                hr_activity_exempt=hr_activity_exempt,
             )
         )
         safety_violations = int(previous.get("hard_safety_violations") or 0) + new_safety_violations
@@ -4382,6 +4405,14 @@ class BrushFlow(_PluginBase):
         logger.error(message)
         self.systemmessage.put(message, title="站点刷流")
 
+    def __notify_merge_count(self) -> int:
+        """通知合并条数（9.11.4 全局设置）：达到 N 条合并推送；未设置=不合并（逐颗推）"""
+        value = getattr(self, "_notify_merge_count", None)
+        try:
+            return int(value) if value and int(value) >= 2 else 0
+        except (TypeError, ValueError):
+            return 0
+
     def __send_delete_message(self, torrent_task: dict, reason: str) -> None:
         """发送包含任务、站点、种子和原因的删种通知（标题排版与加种通知同规则）"""
         task = self._get_task_config()
@@ -4453,16 +4484,46 @@ class BrushFlow(_PluginBase):
                 lines.append(f"{label}：{'是' if key == 'hit_and_run' else value}")
         return "\n".join(lines)
 
-    def __send_add_message(self, torrent: Union[TorrentInfo, dict]) -> None:
-        """发送当前任务新增刷流种子的通知"""
+    def __send_add_messages(self, torrents: List[Union[TorrentInfo, dict]]) -> None:
+        """发送当前任务本轮新增刷流种子的通知（9.11.4：达到合并条数时汇总一条）"""
         task = self._get_task_config()
-        if not task or not task.notify:
+        if not task or not task.notify or not torrents:
             return
-        self.post_message(
-            mtype=NotificationType.SiteMessage,
-            title="【刷流任务种子下载】",
-            text=self.__build_add_message_text(torrent, task.name),
-        )
+        merge_count = self.__notify_merge_count()
+        if merge_count and len(torrents) >= merge_count:
+            lines = [f"任务：{task.name}", f"本轮共新增 {len(torrents)} 个："]
+            for torrent in torrents:
+                read_value = torrent.get if isinstance(torrent, dict) else getattr
+                title = (
+                    torrent.get("title") if isinstance(torrent, dict) else getattr(torrent, "title", None)
+                ) or "未知"
+                size = (
+                    torrent.get("size") if isinstance(torrent, dict) else getattr(torrent, "size", None)
+                )
+                volume = (
+                    torrent.get("volume_factor")
+                    if isinstance(torrent, dict)
+                    else getattr(torrent, "volume_factor", None)
+                )
+                row = f"· {str(title)[:60]}"
+                if size:
+                    row += f"（{StringUtils.str_filesize(size)}"
+                    row += f"、{volume}）" if volume else "）"
+                elif volume:
+                    row += f"（{volume}）"
+                lines.append(row)
+            self.post_message(
+                mtype=NotificationType.SiteMessage,
+                title="【刷流任务种子下载】",
+                text="\n".join(lines),
+            )
+            return
+        for torrent in torrents:
+            self.post_message(
+                mtype=NotificationType.SiteMessage,
+                title="【刷流任务种子下载】",
+                text=self.__build_add_message_text(torrent, task.name),
+            )
 
     def __send_message(self, title: str, text: str) -> None:
         """按当前任务通知开关发送通用站点消息"""
