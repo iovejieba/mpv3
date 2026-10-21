@@ -1555,7 +1555,14 @@ class BrushFlow(_PluginBase):
         except Exception:
             report.update({"success": False, "error": "操作失败，请检查下载器连接与运行诊断"})
             # 堆栈落日志（9.11.7）：对外文案脱敏，但堆栈必须可查——否则连环故障无法定位。
-            logger.exception(f"任务 [{task_id}] 操作 [{operation}] 异常终止，堆栈如下")
+            # 9.11.9：MP 日志格式化器把 logger.exception 的多行堆栈压没了（实机只出首行），
+            # 改为逐行 logger.error——每行独立成条，格式化器吞不掉。
+            import traceback as _traceback
+            logger.error(f"任务 [{task_id}] 操作 [{operation}] 异常终止，逐行堆栈开始")
+            for line in _traceback.format_exc().splitlines():
+                if line.strip():
+                    logger.error(f"[堆栈] {line}")
+            logger.error(f"任务 [{task_id}] 操作 [{operation}] 逐行堆栈结束")
             # Let the operation journal preserve potentially submitted items.
             raise
         finally:
