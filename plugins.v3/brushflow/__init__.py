@@ -875,7 +875,10 @@ class BrushFlow(_PluginBase):
     def _get_task_service(self) -> TaskService:
         if not getattr(self, "_task_service", None):
             repository = getattr(self, "_repository", None) or TaskRepository(self)
-            self._task_service = TaskService(repository, locks=self._task_locks, runtime=self._runtime, runtime_lock=self._runtime_lock)
+            self._task_service = TaskService(
+                repository, locks=self._task_locks, runtime=self._runtime, runtime_lock=self._runtime_lock,
+                exception_logger=logger.exception,
+            )
         return self._task_service
 
     @staticmethod

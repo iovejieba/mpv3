@@ -26,12 +26,17 @@ class OperationError(ValueError):
 
 
 class TaskService:
-    def __init__(self, repository, *, locks=None, runtime=None, runtime_lock=None, clock=time.time):
+    def __init__(self, repository, *, locks=None, runtime=None, runtime_lock=None, clock=time.time,
+                 exception_logger=None):
         self.repository = repository
         self.locks = locks if locks is not None else {}
         self.runtime = runtime if runtime is not None else {}
         self.runtime_lock = runtime_lock or threading.RLock()
         self.clock = clock
+        # 异常日志钩子（9.11.6）：operations 是独立模块不依赖 host 日志栈；
+        # host 侧注入 logger.exception，保证 worker 异常堆栈落日志（实机教训：
+        # 静默吞掉异常导致连环故障三天无法定位）。默认 no-op。
+        self._exception_logger = exception_logger
         self._journal = {}
         self._by_id = {}
         self._by_request = {}
@@ -182,6 +187,9 @@ class TaskService:
             except Exception:
                 # Exceptions may contain tracker passkeys; external-facing error
                 # text is deliberately stable and details stay in per-item audit.
+                # 堆栈必须落日志（9.11.6 实机教训：静默吞掉导致三天连环故障无法定位）。
+                if self._exception_logger is not None:
+                    self._exception_logger("任务操作异常终止（对外文案已脱敏，堆栈仅写日志）")
                 current = self.get(task_id, row["operation_id"])
                 for item in current.get("items", []):
                     if item.get("state") in UNRESOLVED_ITEMS:
