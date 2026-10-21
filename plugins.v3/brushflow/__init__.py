@@ -322,6 +322,9 @@ class BrushTaskConfig:
         self.smart_release_ratio = self._parse_number(config.get("delete_smart_release_ratio"))
         self.smart_release_hours = self._parse_number(config.get("delete_smart_release_hours"))
         self.hr_clear_ratio_override = self._parse_number(config.get("delete_hr_clear_ratio_override"))
+        # 9.11.10：达标/豁免即释放开关曾缺实例属性映射——9.11.5 影子守门器误读
+        # task.release_on_maturity 触发 AttributeError（潜伏 4 天被逐行堆栈定罪）。
+        self.release_on_maturity = bool(config.get("delete_release_on_maturity", False))
         self.rss_support = bool(config.get("rss_support", False))
         self.custom_rss_url = self._clean_text(config.get("custom_rss_url"))
         self.tag = self._clean_text(config.get("tag"))
@@ -369,8 +372,8 @@ class BrushFlow(_PluginBase):
     plugin_desc = "多站点刷流三引擎聚合：策略线内置 ExoticaZ 等全站 H&R 站点策略（官方公式豁免、服务器账本镜像、做种窗口红区）；规则线自定义达标条件即删；智能线学习评分与容量闭环；统一智能选种、达标即释放与下载健康。"
     plugin_icon = "brush-flow.png"
     plugin_version = __version__
-    plugin_author = "jxxghp,InfinityPacer,Seed680,iovejieba"
-    author_url = "https://github.com/InfinityPacer"
+    plugin_author = "jxxghp,InfinityPacer,Seed680,BBin17,iovejieba"
+    author_url = "https://github.com/iovejieba/mpv3"
     plugin_config_prefix = "brushflow_"
     plugin_order = 21
     auth_level = 2
@@ -3652,10 +3655,13 @@ class BrushFlow(_PluginBase):
         false_positive_count = sum(1 for row in candidates.values() if row.get("recovered"))
         false_positive_rate = false_positive_count / candidate_count if candidate_count else 0.0
         previous = self._get_task_data(task.id, "strategy_state") or {}
-        # 影子守门器与活动线旁路（9.11.5）：豁免即释放下，已豁免种子带着活动信号
-        # 进入 selected 是合法语义（计划层/决策链/执行层三处已同判据放行）——
-        # 本守门器是第四道复核，缺同判据会把合法豁免候选误判为硬安全违规，
-        # 误拉 24h 影子期导致豁免即释放失效（9.11.4 实机案例：EXO 任务被误触发）。
+        # 影子守门器与活动线旁路（9.11.5/9.11.10 修正）：豁免即释放下，已豁免种子
+        # 带着活动信号进入 selected 是合法语义（计划层/决策链/执行层三处已同判据
+        # 放行）——本守门器是第四道复核，缺同判据会把合法豁免候选误判为硬安全
+        # 违规，误拉 24h 影子期（9.11.4 实机案例）。
+        # 9.11.10：读取任务配置的 delete_release_on_maturity（BrushTaskConfig 构造
+        # 时尚未映射该 key 到实例属性，与同族字段一致从 config 直读；9.11.5 曾误写
+        # task.release_on_maturity 触发 AttributeError，潜伏至 9.11.9 才被堆栈定罪）。
         hr_activity_exempt = bool(
             task.delete_engine == "hr_policy" and task.release_on_maturity)
         new_safety_violations = sum(
