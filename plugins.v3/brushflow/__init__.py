@@ -369,8 +369,8 @@ class BrushFlow(_PluginBase):
     plugin_desc = "多站点刷流三引擎聚合：策略线内置 ExoticaZ 等全站 H&R 站点策略（官方公式豁免、服务器账本镜像、做种窗口红区）；规则线自定义达标条件即删；智能线学习评分与容量闭环；统一智能选种、达标即释放与下载健康。"
     plugin_icon = "brush-flow.png"
     plugin_version = __version__
-    plugin_author = "jxxghp,InfinityPacer,Seed680,BBin17,iovejieba"
-    author_url = "https://github.com/iovejieba/mpv3"
+    plugin_author = "jxxghp,InfinityPacer,Seed680,iovejieba"
+    author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
     plugin_order = 21
     auth_level = 2
@@ -3548,7 +3548,7 @@ class BrushFlow(_PluginBase):
                 logger.info(f"策略线任务回收保护解除：{candidate.get('title') or torrent_hash}"
                             "（挂账需求与上传增量均已消失，重新参与评估）")
         if changed:
-            self._save_task_data(task.id, "smart_candidates", candidates)
+            self._save_task_data(task_id, "smart_candidates", candidates)
 
     def _update_smart_strategy_state(
         self,
