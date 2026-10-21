@@ -1554,6 +1554,8 @@ class BrushFlow(_PluginBase):
             result = {"state": "failed", "phase": "操作未执行", "error": str(error), "error_code": error.code}
         except Exception:
             report.update({"success": False, "error": "操作失败，请检查下载器连接与运行诊断"})
+            # 堆栈落日志（9.11.7）：对外文案脱敏，但堆栈必须可查——否则连环故障无法定位。
+            logger.exception(f"任务 [{task_id}] 操作 [{operation}] 异常终止，堆栈如下")
             # Let the operation journal preserve potentially submitted items.
             raise
         finally:
