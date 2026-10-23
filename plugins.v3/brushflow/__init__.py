@@ -1646,6 +1646,9 @@ class BrushFlow(_PluginBase):
         brush_uploaded = 0
         active_count = deleted_count = pending_archive = 0
         released_bytes = 0
+        # 口径（9.11.11 修正）：deleted_count = 历史累计已删（torrents 已删 + archived 全部，
+        # 单调递增——此前只数 torrents，归档批次离开后数字不增反降，实机案例：290 掉头）；
+        # pending_archive = 已删但未过归档期的存量（7 天滑动窗口水位），与已删的差值即已归档数。
         for task_id in self._task_configs:
             torrents = self._get_task_data(task_id, "torrents") or {}
             archived = self._get_task_data(task_id, "archived") or {}
@@ -1658,6 +1661,7 @@ class BrushFlow(_PluginBase):
                         released_bytes += float(row.get("size") or 0)
                 else:
                     active_count += 1
+            deleted_count += len(archived)
             for row in archived.values():
                 brush_uploaded += float(row.get("uploaded") or 0)
         data = {
