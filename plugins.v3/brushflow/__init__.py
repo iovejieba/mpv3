@@ -372,8 +372,8 @@ class BrushFlow(_PluginBase):
     plugin_desc = "多站点刷流三引擎聚合：策略线内置 ExoticaZ 等全站 H&R 站点策略（官方公式豁免、服务器账本镜像、做种窗口红区）；规则线自定义达标条件即删；智能线学习评分与容量闭环；统一智能选种、达标即释放与下载健康。"
     plugin_icon = "brush-flow.png"
     plugin_version = __version__
-    plugin_author = "jxxghp,InfinityPacer,Seed680,BBin17,iovejieba"
-    author_url = "https://github.com/iovejieba/mpv3"
+    plugin_author = "jxxghp,InfinityPacer,Seed680,iovejieba"
+    author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
     plugin_order = 21
     auth_level = 2
@@ -1645,10 +1645,13 @@ class BrushFlow(_PluginBase):
             return cached["data"]
         brush_uploaded = 0
         active_count = deleted_count = pending_archive = 0
+        plugin_deleted = 0
         released_bytes = 0
         # 口径（9.11.11 修正）：deleted_count = 历史累计已删（torrents 已删 + archived 全部，
         # 单调递增——此前只数 torrents，归档批次离开后数字不增反降，实机案例：290 掉头）；
         # pending_archive = 已删但未过归档期的存量（7 天滑动窗口水位），与已删的差值即已归档数。
+        # 归因（9.11.12）：plugin_deleted = 带 deletion_operation_id 的记录（本插件引擎发起）；
+        # 差值 = 收编后被外部删除的（手动清理 qB/其他工具/多机同 qb 等），不改动 UI 结构。
         for task_id in self._task_configs:
             torrents = self._get_task_data(task_id, "torrents") or {}
             archived = self._get_task_data(task_id, "archived") or {}
@@ -1657,6 +1660,8 @@ class BrushFlow(_PluginBase):
                 if row.get("deleted"):
                     deleted_count += 1
                     pending_archive += 1
+                    if row.get("deletion_operation_id"):
+                        plugin_deleted += 1
                     if row.get("delete_data"):
                         released_bytes += float(row.get("size") or 0)
                 else:
@@ -1664,12 +1669,16 @@ class BrushFlow(_PluginBase):
             deleted_count += len(archived)
             for row in archived.values():
                 brush_uploaded += float(row.get("uploaded") or 0)
+                if row.get("deletion_operation_id"):
+                    plugin_deleted += 1
         data = {
             "brush_uploaded": brush_uploaded,
             "active_count": active_count,
             "deleted_count": deleted_count,
             "pending_archive": pending_archive,
             "released_bytes": released_bytes,
+            "plugin_deleted": plugin_deleted,
+            "external_deleted": max(deleted_count - plugin_deleted, 0),
         }
         self._ledger_cache = {"at": now_ts, "data": data}
         return data
