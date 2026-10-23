@@ -175,8 +175,22 @@ GLOBAL_LIMIT_FIELDS = (
     "global_maxupspeed",
     "global_maxdlspeed",
     "auto_archive_days",  # 9.9.0 全局化：记录归档天数提升为全局设置（任务级字段退役）
+    "archive_retention_days",  # 9.11.15 沉积治理：归档记录超过 N 天折叠进总账快照（留空=永久保留）
     "notify_merge_count",  # 9.11.4 全局化：加种/删种通知达到 N 条合并推送（留空=不合并）
 )
+
+# 归档沉积治理（9.11.15）：archived 是唯一无上限增长的存储。行数封顶 + 保留天数双闸，
+# 离场记录先折进 archived_totals 快照再丢弃——账本历史累计（已删/上传/释放空间/归因）
+# 全部从快照续上，数字单调性不因折叠而破（教训同 9.11.11"290 掉头"）。
+# 5000 行 ≈ 2.5MB JSON/任务，远低于可感知卡顿区间（实测疼点在十万级全量序列化）。
+ARCHIVED_ROW_CAP = 5000
+ARCHIVED_TOTALS_DEFAULTS = {
+    "count": 0,
+    "plugin_count": 0,
+    "uploaded": 0.0,
+    "downloaded": 0.0,
+    "released_bytes": 0.0,
+}
 
 class BrushTaskConfig:
     """
@@ -385,6 +399,7 @@ class BrushFlow(_PluginBase):
     TASK_DATA_NAMES = (
         "torrents",
         "archived",
+        "archived_totals",  # 9.11.15 归档折叠快照：离场归档记录的累计贡献（delete_task 时随任务清理）
         "unmanaged",
         "statistic",
         "runs",
@@ -468,6 +483,8 @@ class BrushFlow(_PluginBase):
             self.update_config(normalized)
         self._migrate_legacy_data()
         self._migrate_torrent_identity_data()
+        # 归档折叠（9.11.15）：升级后先消化超限存量，不等下一轮检查（10 分钟）
+        self._trim_all_archived_totals()
 
         # V5 为任务增加了唯一标签；启动时回收升级前已经失去任务配置的孤立标签。
         if self._enabled:
@@ -811,7 +828,7 @@ class BrushFlow(_PluginBase):
     def get_task_torrents(
         self,
         task_id: str,
-        state: str = Query("active", pattern="^(active|deleted|all)$"),
+        state: str = Query("active", pattern="^(active|deleted|archived|all)$"),
         page: int = Query(1, ge=1),
         page_size: int = Query(50, ge=10, le=200),
     ) -> schemas.Response:
@@ -1647,14 +1664,20 @@ class BrushFlow(_PluginBase):
         active_count = deleted_count = pending_archive = 0
         plugin_deleted = 0
         released_bytes = 0
+        archived_folded = 0
         # 口径（9.11.11 修正）：deleted_count = 历史累计已删（torrents 已删 + archived 全部，
         # 单调递增——此前只数 torrents，归档批次离开后数字不增反降，实机案例：290 掉头）；
         # pending_archive = 已删但未过归档期的存量（7 天滑动窗口水位），与已删的差值即已归档数。
         # 归因（9.11.12）：plugin_deleted = 带 deletion_operation_id 的记录（本插件引擎发起）；
-        # 差值 = 收编后被外部删除的（手动清理 qB/其他工具/多机同 qb 等），不改动 UI 结构。
+        # 差值 = 收编后被外部删除的（手动清理 qB/其他工具/多机 qb 等），不改动 UI 结构。
+        # 折叠快照（9.11.15）：离场归档记录的贡献从 archived_totals 续上，折叠前后数字不变；
+        # released_bytes 同轮统一为全历史口径（此前漏数 archived，归档批次离开后释放空间缩水——
+        # 与"290 掉头"同族问题）。
         for task_id in self._task_configs:
             torrents = self._get_task_data(task_id, "torrents") or {}
             archived = self._get_task_data(task_id, "archived") or {}
+            totals = self._normalize_archived_totals(self._get_task_data(task_id, "archived_totals"))
+            archived_folded += int(totals["count"])
             for row in torrents.values():
                 brush_uploaded += float(row.get("uploaded") or 0)
                 if row.get("deleted"):
@@ -1671,6 +1694,12 @@ class BrushFlow(_PluginBase):
                 brush_uploaded += float(row.get("uploaded") or 0)
                 if row.get("deletion_operation_id"):
                     plugin_deleted += 1
+                if row.get("delete_data"):
+                    released_bytes += float(row.get("size") or 0)
+            brush_uploaded += totals["uploaded"]
+            deleted_count += int(totals["count"])
+            plugin_deleted += int(totals["plugin_count"])
+            released_bytes += totals["released_bytes"]
         data = {
             "brush_uploaded": brush_uploaded,
             "active_count": active_count,
@@ -1679,6 +1708,7 @@ class BrushFlow(_PluginBase):
             "released_bytes": released_bytes,
             "plugin_deleted": plugin_deleted,
             "external_deleted": max(deleted_count - plugin_deleted, 0),
+            "archived_folded": archived_folded,
         }
         self._ledger_cache = {"at": now_ts, "data": data}
         return data
@@ -2097,10 +2127,14 @@ class BrushFlow(_PluginBase):
         torrents = self._get_task_data(task_id, "torrents") or {}
         archived = self._get_task_data(task_id, "archived") or {}
         rows = list(torrents.values())
+        # 状态口径（9.11.14）：deleted 只含未过归档期的已删记录（7 天窗口水位），
+        # archived 独立标签——归档记录从"已删除"列表退场（实机反馈：7 页存量误读为未归档）。
         if state == "active":
             rows = [row for row in rows if not row.get("deleted")]
         elif state == "deleted":
-            rows = [row for row in rows if row.get("deleted")] + list(archived.values())
+            rows = [row for row in rows if row.get("deleted")]
+        elif state == "archived":
+            rows = list(archived.values())
         else:
             rows.extend(archived.values())
         rows.sort(key=lambda item: item.get("time") or 0, reverse=True)
@@ -4314,38 +4348,144 @@ class BrushFlow(_PluginBase):
             if not item.get("deleted")
         )
 
-    def __auto_archive_tasks(self, torrent_tasks: Dict[str, dict]) -> None:
-        """按全局保留天数归档已删除种子记录（9.9.0 全局化：任务级字段退役）"""
-        global_days = getattr(self, "_auto_archive_days", None)
-        if not global_days or float(global_days) <= 0:
-            return
-        archived_tasks: Dict[str, dict] = self._current_task_data("archived", {})
-        threshold = float(global_days) * 86400
-        now_timestamp = time.time()
-        archive_hashes = []
-        for torrent_hash, item in torrent_tasks.items():
-            if not item.get("deleted"):
+    @staticmethod
+    def _normalize_archived_totals(raw: Any) -> Dict[str, float]:
+        """归档快照形态防御：非 dict / 缺字段 / 坏值一律回退默认值（判据只信归一化后的字段）"""
+        totals = dict(ARCHIVED_TOTALS_DEFAULTS)
+        if not isinstance(raw, dict):
+            return totals
+        for key in totals:
+            try:
+                totals[key] = max(float(raw.get(key) or 0), 0.0)
+            except (TypeError, ValueError):
+                totals[key] = 0.0
+        return totals
+
+    @staticmethod
+    def _archived_row_timestamp(row: dict) -> float:
+        """归档记录的离场时间锚：优先 deleted_time，退回 time；两者皆缺视为 0（最老，先折叠）"""
+        for key in ("deleted_time", "time"):
+            value = row.get(key) if isinstance(row, dict) else None
+            if isinstance(value, (int, float)) and value > 0:
+                return float(value)
+        return 0.0
+
+    def _fold_archived_rows(self, rows: List[dict], totals: Dict[str, float]) -> Dict[str, float]:
+        """把离开 archived 的记录贡献累加进快照——与 _build_ledger 的明细行口径逐字段一致"""
+        for row in rows:
+            if not isinstance(row, dict):
+                totals["count"] += 1
                 continue
-            deleted_time = item.get("deleted_time")
-            if deleted_time is None or (
-                isinstance(deleted_time, (int, float))
-                and now_timestamp - deleted_time > threshold
-            ):
-                archive_hashes.append(torrent_hash)
-        for torrent_hash in archive_hashes:
-            archived_tasks[torrent_hash] = torrent_tasks.pop(torrent_hash)
-        self._save_current_task_data("archived", archived_tasks)
+            totals["count"] += 1
+            if row.get("deletion_operation_id"):
+                totals["plugin_count"] += 1
+            totals["uploaded"] += float(row.get("uploaded") or 0)
+            totals["downloaded"] += float(row.get("downloaded") or 0)
+            if row.get("delete_data"):
+                totals["released_bytes"] += float(row.get("size") or 0)
+        return totals
+
+    def _trim_archived_rows(
+        self, archived: Dict[str, dict], totals: Any, now: Optional[float] = None
+    ) -> Tuple[Dict[str, dict], Dict[str, float]]:
+        """归档折叠双闸（9.11.15）：保留天数 + 行数上限，离场记录先折进快照再丢弃。
+
+        只读入参、返回新对象；无记录离场时原样返回（totals 已归一化）。
+        """
+        totals = self._normalize_archived_totals(totals)
+        if not isinstance(archived, dict) or not archived:
+            return (archived if isinstance(archived, dict) else {}), totals
+        now_ts = float(now if now is not None else time.time())
+        pairs = list(archived.items())
+        expired = set()
+        retention_days = getattr(self, "_archive_retention_days", None)
+        if retention_days and float(retention_days) > 0:
+            cutoff = now_ts - float(retention_days) * 86400
+            expired = {
+                torrent_hash for torrent_hash, row in pairs
+                if self._archived_row_timestamp(row) < cutoff
+            }
+        kept = [(torrent_hash, row) for torrent_hash, row in pairs if torrent_hash not in expired]
+        overflow = len(kept) - ARCHIVED_ROW_CAP
+        if overflow > 0:
+            kept.sort(key=lambda pair: self._archived_row_timestamp(pair[1]))
+            expired.update(torrent_hash for torrent_hash, _ in kept[:overflow])
+            kept = kept[overflow:]
+        if not expired:
+            return archived, totals
+        folded_rows = [archived[torrent_hash] for torrent_hash in expired]
+        trimmed = dict(kept)
+        return trimmed, self._fold_archived_rows(folded_rows, totals)
+
+    def _trim_task_archive(self, task_id: str, now: Optional[float] = None) -> int:
+        """单任务归档折叠；返回本轮折叠条数。初始化时逐任务执行，升级后立即消化超限存量。"""
+        archived = self._get_task_data(task_id, "archived") or {}
+        totals_raw = self._get_task_data(task_id, "archived_totals")
+        trimmed, totals = self._trim_archived_rows(archived, totals_raw, now=now)
+        folded = len(archived) - len(trimmed)
+        if folded > 0:
+            self._save_task_data(task_id, "archived", trimmed)
+        # totals 首次落盘（即便 0 折叠）：后续统计口径统一走归一化快照，避免每次现算
+        if folded > 0 or not isinstance(totals_raw, dict):
+            self._save_task_data(task_id, "archived_totals", totals)
+        return folded
+
+    def _trim_all_archived_totals(self, now: Optional[float] = None) -> int:
+        """全部任务归档折叠（init_plugin 一次性入口）；单任务失败不阻断其余任务。"""
+        folded_total = 0
+        for task_id in self._task_configs:
+            try:
+                folded_total += self._trim_task_archive(task_id, now=now)
+            except Exception as err:
+                logger.warning(f"任务 [{task_id}] 归档折叠失败，待下轮检查重试：{str(err)}")
+        if folded_total:
+            logger.info(f"归档折叠完成：共 {folded_total} 条历史归档折进总账快照（账本数字不变）")
+            self._ledger_cache = None
+        return folded_total
+
+    def __auto_archive_tasks(self, torrent_tasks: Dict[str, dict]) -> None:
+        """按全局保留天数归档已删除种子记录，并执行归档折叠（9.11.15 沉积治理）。
+
+        两闸独立：迁移闸 auto_archive_days（torrents→archived）不启用时，
+        折叠闸（archive_retention_days / ARCHIVED_ROW_CAP）仍须每轮执行，否则存量永不收缩。
+        """
+        global_days = getattr(self, "_auto_archive_days", None)
+        archived_tasks: Dict[str, dict] = self._current_task_data("archived", {})
+        if global_days and float(global_days) > 0:
+            threshold = float(global_days) * 86400
+            now_timestamp = time.time()
+            archive_hashes = []
+            for torrent_hash, item in torrent_tasks.items():
+                if not item.get("deleted"):
+                    continue
+                deleted_time = item.get("deleted_time")
+                if deleted_time is None or (
+                    isinstance(deleted_time, (int, float))
+                    and now_timestamp - deleted_time > threshold
+                ):
+                    archive_hashes.append(torrent_hash)
+            for torrent_hash in archive_hashes:
+                archived_tasks[torrent_hash] = torrent_tasks.pop(torrent_hash)
+        totals_raw = self._current_task_data("archived_totals", None)
+        trimmed, totals = self._trim_archived_rows(archived_tasks, totals_raw)
+        folded_count = len(archived_tasks) - len(trimmed)
+        if folded_count > 0:
+            self._save_current_task_data("archived", trimmed)
+        if folded_count > 0 or not isinstance(totals_raw, dict):
+            self._save_current_task_data("archived_totals", totals)
 
     def _recalculate_statistics(self, task_id: str) -> Dict[str, int]:
-        """从当前和归档记录重新计算单任务统计"""
+        """从当前、归档与折叠快照重新计算单任务统计（9.11.15：快照并入历史累计字段）"""
         torrents = self._get_task_data(task_id, "torrents") or {}
         archived = self._get_task_data(task_id, "archived") or {}
+        totals = self._normalize_archived_totals(self._get_task_data(task_id, "archived_totals"))
         combined = {**archived, **torrents}
+        folded_count = int(totals["count"])
         statistic = {
-            "count": len(combined),
-            "deleted": sum(1 for item in combined.values() if item.get("deleted")),
-            "uploaded": sum(item.get("uploaded", 0) or 0 for item in combined.values()),
-            "downloaded": sum(item.get("downloaded", 0) or 0 for item in combined.values()),
+            "count": len(combined) + folded_count,
+            "deleted": sum(1 for item in combined.values() if item.get("deleted")) + folded_count,
+            "uploaded": sum(item.get("uploaded", 0) or 0 for item in combined.values()) + totals["uploaded"],
+            "downloaded": sum(item.get("downloaded", 0) or 0 for item in combined.values()) + totals["downloaded"],
             "unarchived": sum(1 for item in torrents.values() if item.get("deleted")),
             "active": sum(1 for item in torrents.values() if not item.get("deleted")),
             "active_uploaded": sum(

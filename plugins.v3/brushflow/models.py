@@ -35,6 +35,7 @@ class BrushFlowSettingsPayload(BaseModel):
     global_maxupspeed: Optional[float] = Field(None, gt=0)
     global_maxdlspeed: Optional[float] = Field(None, gt=0)
     auto_archive_days: Optional[int] = Field(None, ge=1)  # 9.9.0 归档全局化
+    archive_retention_days: Optional[int] = Field(None, ge=1)  # 9.11.15 归档保留天数（折叠进总账快照，留空永久保留）
     notify_merge_count: Optional[int] = None  # 9.11.4 通知合并条数（None 或 <2 视为不合并逐颗推）
     signin_enabled: bool = False
     signin_notify: bool = True
@@ -52,7 +53,7 @@ class BrushFlowSettingsPayload(BaseModel):
         except (TypeError, ValueError):
             return None
 
-    @field_validator("global_disksize", "global_maxdlcount", "global_maxupspeed", "global_maxdlspeed", "auto_archive_days", mode="before")
+    @field_validator("global_disksize", "global_maxdlcount", "global_maxupspeed", "global_maxdlspeed", "auto_archive_days", "archive_retention_days", mode="before")
     @classmethod
     def normalize_limits(cls, value):
         return _positive_or_none(value)

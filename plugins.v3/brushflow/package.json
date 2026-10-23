@@ -1,7 +1,7 @@
 {
   "name": "moviepilot-brushflow-plugin",
   "private": true,
-  "version": "9.11.13",
+  "version": "9.11.15",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",
