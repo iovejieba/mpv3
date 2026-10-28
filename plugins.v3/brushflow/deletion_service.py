@@ -174,6 +174,7 @@ class DeletionService:
     def __init__(self, *, repository, operations: TaskService, adapter, document, managed_tag=None,
                  hr_policy: SiteHRRule | None = None, hr_clear_ratio_override: float | None = None,
                  hr_buffer_hours: float = 0.0, hr_ledger_lookup=None,
+                 exemption_deletion_recorder=None,
                  clock=time.time, sleep=time.sleep):
         self.repository = repository
         self.operations = operations
@@ -188,6 +189,9 @@ class DeletionService:
         self.hr_clear_ratio_override = hr_clear_ratio_override
         self.hr_buffer_hours = hr_buffer_hours
         self.hr_ledger_lookup = hr_ledger_lookup
+        # 离职复核登记回调（9.13）：豁免删除确认时由宿主登记观察名单；
+        # 默认 no-op 保持 DeletionService 模块独立性（与 hr_ledger_lookup 同惯例）。
+        self.exemption_deletion_recorder = exemption_deletion_recorder
 
     def read(self, name, default=None):
         return deepcopy(self.repository.get(self.task_id, name, default))
@@ -471,6 +475,12 @@ class DeletionService:
                 record.update({"deleted": True, "deleted_time": self.clock(), "deletion_operation_id": operation_id,
                                "delete_data": item["delete_data"], "uploaded": max(number(record.get("uploaded")), number(item.get("uploaded")))})
                 self.write("torrents", records)
+            # 离职复核登记（9.13）：策略站豁免删除进观察名单，随账本同步顺路核对
+            # 删后校验期结果（T+2h10m/T+24h）。非策略站/无效 Tracker 清理不登记。
+            if self.hr_policy and callable(self.exemption_deletion_recorder) and record:
+                self.exemption_deletion_recorder(
+                    str(torrent_id_from_path(str(record.get("page_url") or ""))),
+                    str(record.get("title") or item["hash"]))
         # Keep unresolved requests even past the accounting retention window.
         ledger = [row for row in ledger if self.clock() - number(row.get("at")) < 31 * 86400 or row.get("status") in UNRESOLVED_ITEMS]
         self.write("smart_deletions", ledger)

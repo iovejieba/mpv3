@@ -441,8 +441,12 @@ def parse_history_ledger(html_text: str) -> List[Dict[str, Any]]:
       seed_hours                                   服务器累计做种时长(由 H&R 倒计时反推, 精确;
                                                    无倒计时时为 None, seed_display 仅有天级截断值)
       hr_state                                     'none' | 'watch'(未达标, 做种中, 窗口内)
+                                                   | 'buffered'(离线触发 ~2h 判定挂起)
+                                                   | 'fulfilled'(义务了结)
                                                    | 'counted'(已记账, 窗口期已过)
+                                                   | 'cleared'(BP 清除终态)
       hr_remaining_hours                           剩余要求时长(站点倒计时原文, 分钟精度)
+      buffer_remaining_hours                       Buffered 态缓冲剩余(≠欠账量, 9.13)
       hr_clear_bp                                  花魔力清除的标价(仅 counted 态, 无则 None)
     """
     html = etree.HTML(html_text or "")
@@ -460,6 +464,7 @@ def parse_history_ledger(html_text: str) -> List[Dict[str, Any]]:
             "add_hours_ago": None, "updated_hours_ago": None,
             "seed_hours": None, "seed_display": "",
             "hr_state": "none", "hr_remaining_hours": None, "hr_clear_bp": None,
+            "buffer_remaining_hours": None,  # 9.13：Buffered 态的缓冲剩余（≠欠账量）
         }
         file_cell = cells[1]
         row["title"] = norm_space(file_cell.xpath("string(.//a[contains(@href,'/torrent/')][1])"))
@@ -487,21 +492,41 @@ def parse_history_ledger(html_text: str) -> List[Dict[str, Any]]:
             row["seed_display"] = norm_space(cells[9].xpath("string(.)"))
         tip_nodes = [el for el in cells[10].xpath(".//*[@data-toggle='tooltip']")
                      if _tooltip_text(el)]
-        if not tip_nodes:
-            hr_text = norm_space(cells[10].xpath("string(.)"))
-            if hr_text:
-                row["hr_state"] = "watch"
-                row["hr_remaining_hours"] = _remaining_to_hours(hr_text)
+        # 六态状态机（9.13，WIKI §3.3.1：五案例逆向 + 46 行 DOM 样本实证）：
+        #   none        无徽标（未入 H&R 流程，或 Seeded=yes 的 Fulfilled 终态变体）
+        #   watch       not counted for actively seeded torrent. X left（做种中豁免，X=窗口剩余）
+        #   buffered    Hit & Run Buffered for X（离线触发的 ~2h 判定挂起，X=缓冲剩余，
+        #               实时递减——不是欠账量，存 buffer_remaining_hours 不混入 hr_remaining_hours）
+        #   counted     Counted as a Hit & Run（已记账 H&R）
+        #   fulfilled   Hit & Run Fulfilled（绿勾，义务了结——巡检快照，可能被删后重算推翻）
+        #   cleared     Clear cleared using N BP（BP 清除终态）
+        # 判据按字段组合而非单徽标：同一行可叠放多枚徽标（Buffered+not counted 双行），
+        # 优先级 counted > cleared > fulfilled > buffered > watch（越接近终态越优先记录）。
         for node in tip_nodes:
             tip = norm_space(_tooltip_text(node))
             if "Counted as a Hit & Run" in tip:
                 row["hr_state"] = "counted"
                 row["hr_remaining_hours"] = _remaining_to_hours(tip)
+            elif "cleared using" in tip and "Bonus Points" in tip:
+                if row["hr_state"] in ("none", "watch", "buffered", "fulfilled"):
+                    row["hr_state"] = "cleared"
+                bp = re.search(r"using (\d+) Bonus Points", tip)
+                if bp:
+                    row["hr_clear_bp"] = int(bp.group(1))
+            elif "Hit & Run Fulfilled" in tip:
+                if row["hr_state"] in ("none", "watch", "buffered"):
+                    row["hr_state"] = "fulfilled"
+            elif "Buffered for" in tip:
+                if row["hr_state"] in ("none", "watch"):
+                    row["hr_state"] = "buffered"
+                    row["buffer_remaining_hours"] = _buffered_to_hours(tip)
             elif "not counted" in tip or re.search(r"\d+\s*(hours?|minutes?).{0,20}left", tip, re.IGNORECASE):
                 if row["hr_state"] == "none":
                     row["hr_state"] = "watch"
                     row["hr_remaining_hours"] = _remaining_to_hours(tip)
-            bp = re.search(r"Clear this Hit & Run for (\d+) BP", tip)
+        if "Clear this Hit & Run for" in norm_space(" ".join(_tooltip_text(n) for n in tip_nodes)):
+            bp = re.search(r"Clear this Hit & Run for (\d+) BP",
+                           norm_space(" ".join(_tooltip_text(n) for n in tip_nodes)))
             if bp:
                 row["hr_clear_bp"] = int(bp.group(1))
         if row["hr_remaining_hours"] is not None and row["size_bytes"]:
@@ -548,6 +573,29 @@ def _remaining_to_hours(text: str) -> Optional[float]:
     m = re.search(r"(\d+)\s*hours?\s*left", text, re.IGNORECASE)
     if m:
         return float(m.group(1))
+    return None
+
+
+def _buffered_to_hours(text: str) -> Optional[float]:
+    """Buffered for X → X（缓冲剩余小时，实时递减；与 'X left' 窗口剩余是不同字段）。"""
+    m = re.search(r"Buffered for (\d+)\s*days?\s*(\d+)\s*hours?", text, re.IGNORECASE)
+    if m:
+        return int(m.group(1)) * 24 + int(m.group(2))
+    m = re.search(r"Buffered for (\d+)\s*days?\s*(\d+)\s*minutes?", text, re.IGNORECASE)
+    if m:
+        return int(m.group(1)) * 24 + int(m.group(2)) / 60
+    m = re.search(r"Buffered for (\d+)\s*hours?\s*(\d+)\s*minutes?", text, re.IGNORECASE)
+    if m:
+        return int(m.group(1)) + int(m.group(2)) / 60
+    m = re.search(r"Buffered for (\d+)\s*minutes?\s*(\d+)\s*seconds?", text, re.IGNORECASE)
+    if m:
+        return int(m.group(1)) / 60 + int(m.group(2)) / 3600
+    m = re.search(r"Buffered for (\d+)\s*hours?", text, re.IGNORECASE)
+    if m:
+        return float(m.group(1))
+    m = re.search(r"Buffered for (\d+)\s*minutes?", text, re.IGNORECASE)
+    if m:
+        return int(m.group(1)) / 60
     return None
 
 

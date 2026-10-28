@@ -68,6 +68,11 @@ _SITE_USER_STATS_TTL = 1800
 _SITE_HR_WINDOW_HOURS = 96        # 做种窗口：完成时刻起 4 天内须达成公式要求（离线消耗窗口但不计时长）
 _SITE_LEDGER_TTL = 1800           # 账本同步缓存有效期（秒）
 _SITE_LEDGER_MAX_PAGES = 3        # 每轮最多翻页数（1~3 请求/轮，站点级 1rps 节流）
+# 9.13 离职复核（WIKI §3.3.1）：完整视图开关 + 活动时间尾判据 + 复核时点
+_HR_LEDGER_FULL_VIEW = True       # False = 回退 9.11.15 的 hnr=1 视图（离职复核随之停用）
+_HR_REVIEW_ACTIVITY_HOURS = 2.0   # 页尾行活动时间 ≥ 该值即停翻（在管+近期删除都在头部）
+_HR_REVIEW_FIRST_HOURS = 2.17     # 删除后首次复核时点（≈站点 2h 缓冲期 + 10min 余量）
+_HR_REVIEW_FINAL_HOURS = 24.0     # 终局复查时点
 _SITE_HR_BUFFER_DEFAULT = 6.0     # 标定缓冲起步值（实测漂移 ≈6h：离线 ~5h + announce 结算滞后 ~1h）
 _SITE_HR_BUFFER_MAX = 48.0        # 缓冲上限
 _SITE_HR_BUFFER_FLOOR = 0.75      # 收敛下限：≥1.5×announce 周期（离线是长尾事件，平均漂移≠最坏漂移）
@@ -400,6 +405,7 @@ class BrushFlow(_PluginBase):
         "torrents",
         "archived",
         "archived_totals",  # 9.11.15 归档折叠快照：离场归档记录的累计贡献（delete_task 时随任务清理）
+        "hr_deletion_watchlist",  # 9.13 离职复核观察名单：豁免删除后随账本同步顺路核对
         "unmanaged",
         "statistic",
         "runs",
@@ -932,11 +938,13 @@ class BrushFlow(_PluginBase):
             by_id = (self._site_hr_ledger_cache.get(ledger_domain) or {}).get("by_id") or {}
             if by_id:
                 ledger_lookup = by_id.get
+        recorder = self.record_exemption_deletion if site_rule else None
         return DeletionService(
             repository=self._repository, operations=self._get_task_service(), document=self._task_documents[task_id],
             managed_tag=task.brush_tag,
             hr_policy=site_rule, hr_clear_ratio_override=ratio_override,
             hr_buffer_hours=buffer_hours, hr_ledger_lookup=ledger_lookup,
+            exemption_deletion_recorder=recorder,
             adapter=DownloaderAdapter(service.instance, identify=self.__get_hash,
                                       normalize=lambda torrent: self.__get_torrent_info(torrent, service=service)),
         )
@@ -1930,13 +1938,22 @@ class BrushFlow(_PluginBase):
         base_url = base_url.rstrip("/")
         site_name = getattr(site, "name", None) or domain
         rows: List[dict] = []
+        # 视图选择（9.13）：默认爬完整 history 头部（默认按活动时间降序，在管+近期删除
+        # 种子霸榜；Upd < _HR_REVIEW_ACTIVITY_HOURS 即停——总量 190 页永不触碰），
+        # 为离职复核提供 Fulfilled/Buffered 全景；hnr=1 异常视图保留为回退开关
+        # （_HR_LEDGER_FULL_VIEW=False 时行为与 9.11.15 完全一致）。
+        use_full_view = _HR_LEDGER_FULL_VIEW
+        last_activity_hours: Optional[float] = None
         for page in range(1, _SITE_LEDGER_MAX_PAGES + 1):
             self._site_throttle.wait()
+            # 9.13：全量视图（默认按活动时间降序）或回退 hnr=1 异常视图
+            path = f"/profile/{username}/history?page={page}" if use_full_view \
+                else f"/profile/{username}/history?hnr=1&page={page}"
             response = RequestUtils(
                 cookies=getattr(site, "cookie", None),
                 ua=getattr(site, "ua", None),
                 proxies=settings.PROXY if getattr(site, "proxy", False) else None,
-            ).get_res(f"{base_url}/profile/{username}/history?hnr=1&page={page}")
+            ).get_res(f"{base_url}{path}")
             if not response or response.status_code != 200:
                 logger.warning(
                     f"站点 [{site_name}] H&R 账本同步失败：HTTP {getattr(response, 'status_code', 'N/A')}"
@@ -1947,13 +1964,20 @@ class BrushFlow(_PluginBase):
             if not page_rows:
                 break
             rows.extend(page_rows)
+            if use_full_view:
+                # 尾判据：页尾行的活动时间已冷（≥2h），更深的页全是陈年种子，停
+                tails = [row.get("updated_hours_ago") for row in page_rows if row.get("updated_hours_ago") is not None]
+                last_activity_hours = tails[-1] if tails else None
+                if last_activity_hours is not None and last_activity_hours >= _HR_REVIEW_ACTIVITY_HOURS:
+                    break
         cache["at"] = now
         cache["rows"] = rows
         cache["by_id"] = {str(row.get("torrent_id") or ""): row for row in rows if row.get("torrent_id")}
         if not rows:
             logger.info(f"站点 [{site_name}] H&R 账本为空（观察名单无种子）")
         self._notify_new_counted_hr(task, site_name, cache)
-
+        if use_full_view:
+            self._review_recent_exemption_deletions(task, site_name, cache)
     def _notify_new_counted_hr(self, task: BrushTaskConfig, site_name: str, cache: dict) -> None:
         """对账本中新增的已记账 H&R 发送提醒（自愈语义：继续做种到倒计时归零自动解除）。"""
         counted_now = {tid for tid, row in (cache.get("by_id") or {}).items() if row.get("hr_state") == "counted"}
@@ -1977,6 +2001,88 @@ class BrushFlow(_PluginBase):
             + "\n继续做种到倒计时归零会自动解除；BP 清除按 10 BP/小时计价，仅建议用于死种或紧急占坑。\n"
               f"注意：做种窗口为完成后 {_SITE_HR_WINDOW_HOURS} 小时，离线会消耗窗口但不计做种时长，请保持在线。",
         )
+
+    def _recent_exemption_deletions(self, task_id: str) -> List[dict]:
+        """读取近期豁免删除跟踪表（离职复核数据源）。"""
+        rows = self._get_task_data(task_id, "hr_deletion_watchlist") or []
+        return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+    def record_exemption_deletion(self, task_id: str, torrent_id: str, title: str, *, now: Optional[float] = None) -> None:
+        """豁免删除时登记观察名单（供离职复核；随 T+24h 终局后清理）。"""
+        if not torrent_id:
+            return
+        timestamp = float(now if now is not None else time.time())
+        rows = [row for row in self._recent_exemption_deletions(task_id)
+                if row.get("torrent_id") != str(torrent_id)]
+        rows.append({
+            "torrent_id": str(torrent_id), "title": str(title or torrent_id),
+            "deleted_at": timestamp, "notified_at": None, "state": "watching",
+        })
+        # 只保留 7 天内条目（96h 窗口 + 24h 终局复查的覆盖范围之外即无意义）
+        rows = [row for row in rows if timestamp - float(row.get("deleted_at") or 0) <= 7 * 86400]
+        self._save_task_data(task_id, "hr_deletion_watchlist", rows[-200:])
+
+    def _review_recent_exemption_deletions(self, task: BrushTaskConfig, site_name: str, cache: dict, *, now: Optional[float] = None) -> None:
+        """离职复核（9.13）：豁免删除后随账本同步顺路核对，纯通知零决策介入。
+
+        - T+2h10m 首查（避开站点 ~2h Buffered 判定挂起期的中间态误报）；
+        - Buffered 仍在 → 静默等下一轮（缓冲期内属正常）；
+        - Counted → 告警（含 BP 价位，NACT-199 格式），标记已通知；
+        - Fulfilled/Cleared/无行 → 静默关单；
+        - T+24h 终局复查后无论结果关单（超出救援窗口，告警已尽义务）。
+        """
+        task_id = task.id
+        rows = self._recent_exemption_deletions(task_id)
+        if not rows:
+            return
+        by_id = cache.get("by_id") or {}
+        now_ts = float(now if now is not None else time.time())
+        alerts: List[dict] = []
+        alive: List[dict] = []
+        for row in rows:
+            age = (now_ts - float(row.get("deleted_at") or 0)) / 3600
+            if age >= _HR_REVIEW_FINAL_HOURS:
+                continue  # 终局复查窗口已过，关单（不删除历史——下一轮按 7 天滚动清理）
+            if age < _HR_REVIEW_FIRST_HOURS:
+                alive.append(row)
+                continue
+            ledger_row = by_id.get(str(row.get("torrent_id") or ""))
+            state = str((ledger_row or {}).get("hr_state") or "none")
+            if state in ("fulfilled", "cleared", "none"):
+                continue  # 翻绿/已清/无行：静默关单（不进 alive 即关闭）
+            if state == "buffered":
+                alive.append(row)  # 判定挂起仍在走，等下一轮
+                continue
+            # counted：真欠账——首查告警一次，终局复查不重复轰炸
+            if not row.get("notified_at"):
+                bp = (ledger_row or {}).get("hr_clear_bp")
+                row["notified_at"] = now_ts
+                alerts.append({
+                    "title": row.get("title") or row.get("torrent_id"),
+                    "remaining": (ledger_row or {}).get("hr_remaining_hours"),
+                    "bp": bp,
+                })
+            alive.append(row)
+        if rows != alive:
+            self._save_task_data(task_id, "hr_deletion_watchlist", alive)
+        elif any(row.get("notified_at") for row in rows):
+            # 告警后仍 Counted：落盘 notified_at（不重复轰炸的关键），名单保持观察
+            self._save_task_data(task_id, "hr_deletion_watchlist", alive)
+        if alerts:
+            lines = []
+            for item in alerts[:5]:
+                remaining = item.get("remaining")
+                bp = item.get("bp")
+                lines.append(f"· {item['title']}（剩余 "
+                             + (f"{remaining:g}" if isinstance(remaining, (int, float)) else "?")
+                             + " 小时" + (f"，BP 清除 {bp}" if bp else "") + "）")
+            if len(alerts) > 5:
+                lines.append(f"· … 等共 {len(alerts)} 个")
+            self.__send_message(
+                f"【刷流豁免删除复核】{site_name}",
+                "以下已豁免删除的种子被站点记账为 Hit & Run（删除后校验期未补足）：\n" + "\n".join(lines)
+                + "\n可评估 BP 清除或救援重加（免费种可重下补足做种时长）；继续忽略将计入 H&R。",
+            )
 
     def _calibrate_hr_buffer(self, task: BrushTaskConfig, site: Any, torrent_tasks: Dict[str, dict]) -> None:
         """用账本服务器做种时长与客户端统计的漂移标定缓冲（EWMA，账本为分钟级精度）。
