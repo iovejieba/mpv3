@@ -111,6 +111,10 @@ class DeletionConfig(BaseModel):
     # 检查即删除，不等容量压力；默认关闭 = 保守延保（等容量压力再删）。
     # smart 引擎不受此开关影响（容量等待是其核心语义）。
     release_on_maturity: bool = False
+    # 免费到期未完成处置（9.12.0 测试）：off/pause/delete，默认 off。
+    # 到期（含 announce 缓冲）未下完的免费种子暂停或删除，防止过期后继续计费；
+    # 策略线与全站 H&R 站在运行时强制排除，不依赖此字段自觉。
+    free_expiry_action: Literal["off", "pause", "delete"] = "off"
     paused: bool = False
     observation_started_at: Optional[float] = None
     observation_until: Optional[float] = None
@@ -305,6 +309,7 @@ class TaskConfigV9(BaseModel):
             "delete_smart_release_ratio": self.deletion.smart_release_ratio,
             "delete_smart_release_hours": self.deletion.smart_release_hours,
             "delete_release_on_maturity": self.deletion.release_on_maturity,
+            "delete_free_expiry_action": self.deletion.free_expiry_action,
             "auto_archive_days": self.deletion.auto_archive_days,
             "delete_except_tags": self.deletion.exclude_tags,
             "delete_files": self.deletion.delete_data,

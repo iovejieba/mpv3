@@ -35,6 +35,7 @@ def build_health_summary(
     capacity_pressure: bool,
     readiness_message: str,
     task_enabled: bool,
+    free_paused_count: int = 0,
 ) -> dict:
     """按固定优先级返回白话结论和可执行动作。"""
     actions = []
@@ -94,6 +95,14 @@ def build_health_summary(
         health = {"level": "warning", "title": "容量高于目标", "message": readiness_message, "status": "capacity_pressure"}
         if mode == "paused":
             actions.append(_action("resume_deletion", "恢复自动清理", "warning", "将恢复自动删种；插件仍会先检查所有硬安全线。确认继续吗？"))
+    elif free_paused_count:
+        # 免费到期待手动处置（9.12.0 测试）：信息态——插件已完成自己的动作（暂停），
+        # 剩下的是用户在下载器里补完或删除，不提供插件侧按钮
+        health = {
+            "level": "info", "title": "有种子等待手动处置", "status": "free_expiry_paused",
+            "message": f"{int(free_paused_count)} 颗免费到期种子已暂停（防止过期后继续计费），"
+                       "已下载数据保留；可在下载器中手动补完或删除，恢复后插件不会重复暂停。",
+        }
     elif not task_enabled:
         health = {
             "level": "info", "title": "任务已暂停", "status": "task_paused",

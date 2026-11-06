@@ -181,6 +181,10 @@ class TorrentObservation:
     # 真实需求强度判定（9.11.2）：None = 未知（回退旧名册判据），False = 名册挂名
     # 但 24h 内无下载量级行为佐证（僵尸意向，不再构成保护）。
     real_demand: Optional[bool] = None
+    # 24h 上传窗口完整性（9.12.0-beta.2，移植上游 smart 1.5.0）：None = 未知
+    # （旧观测/无学习数据，不设防），False = 窗口未完整观察（缺史或断档）——
+    # 零收益不可据此判定为低价值。
+    upload_window_observed_24h: Optional[bool] = None
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "TorrentObservation":
@@ -224,6 +228,10 @@ class TorrentObservation:
             # 容量压力允许超过 100%，供超额恢复模式区分“刚触发”与严重超额。
             capacity_pressure=max(0.0, min(_number(data.get("capacity_pressure")), 4.0)),
             real_demand=bool(data.get("real_demand")) if data.get("real_demand") is not None else None,
+            upload_window_observed_24h=(
+                bool(data["upload_window_observed_24h"])
+                if data.get("upload_window_observed_24h") is not None else None
+            ),
         )
 
     @property
@@ -849,6 +857,12 @@ def evaluate_candidate(
     inactive_floor = max(policy.smart_cold_inactive_minutes, policy.min_inactive_minutes)
     if inactive_floor > 0 and observation.inactive_time < inactive_floor * 60:
         return blocked("smart_cold_cooldown")
+    # 窗口完整性护栏（9.12.0-beta.2，移植上游 smart 1.5.0）：24h 上传窗口未完整
+    # 观察（新纳管/快照断档）时，零增量不可判定为"零收益"低价值——保留并等窗口
+    # 补满。仅作用于 yield 评审路径：rules/策略豁免/赦免线通道已在上方早退，
+    # 不受影响；方向为纯保护（只加 keep），四道复核安全线未放松。
+    if observation.upload_window_observed_24h is False:
+        return DecisionResult(observation.torrent_hash, "keep", 100.0, ("insufficient_upload_history",))
     score, contributions = retention_score(
         observation,
         history,

@@ -120,11 +120,18 @@ def _percentile(values: Sequence[float], percentile: float) -> float:
 
 
 def winsorize(value: float, samples: Sequence[float]) -> float:
-    """用历史 5/95 分位截尾，避免单次爆发污染任务模型。"""
-    clean = [max(_number(item), 0.0) for item in samples if _number(item, -1.0) >= 0]
+    """正收益按 95 分位截尾（防单次爆发污染）；零收益保持为零、不锁死后续增长。
+
+    旧实现把零样本计入分位母体：近期零收益占比 ≥95% 的桶（间歇出收益的种子
+    几乎必然如此）会把正收益截到 0，EWMA 永远学不起来。正样本单独成母体后，
+    截尾只压制爆发值、不再吞掉常态正收益（移植上游 smart 1.5.0 同源修复）。
+    """
+    if _number(value) <= 0:
+        return 0.0
+    clean = [_number(item) for item in samples if _number(item) > 0]
     if len(clean) < 5:
         return max(_number(value), 0.0)
-    return min(max(_number(value), _percentile(clean, 0.05)), _percentile(clean, 0.95))
+    return min(_number(value), _percentile(clean, 0.95))
 
 
 def _update_bucket(bucket: Mapping[str, Any] | None, value: float, elapsed_hours: float, now: float) -> dict:
@@ -224,6 +231,49 @@ def update_learning_state(
     }
 
 
+def measure_upload_window(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    uploaded: float,
+    now: float,
+    hours: float = 24,
+) -> dict:
+    """带覆盖率的窗口增量测量：缺失历史永不等于零收入。
+
+    - complete=True 仅当窗口起点有基线、内部快照连续（间隔 ≤2h）且覆盖满 hours；
+    - 快照断档（MP 停机/任务暂停）期间不计增量，窗口标记不完整；
+    - 窗口起点前的陈旧基线不参与测量——旧实现把断档前累计拉进窗口，
+      把多天增量错标成"24h 增量"（移植上游 smart 1.5.0 同源修复）。
+    """
+    start = now - hours * 3600
+    points = {_number(row.get("at")): _number(row.get("uploaded"), -1.0)
+              for row in rows if 0 < _number(row.get("at")) <= now and _number(row.get("uploaded"), -1.0) >= 0}
+    points[now] = max(_number(uploaded), 0)
+    ordered = sorted(points.items())
+    before = [point for point in ordered if point[0] <= start]
+    after = [point for point in ordered if point[0] > start]
+    if not after:
+        return {"delta": 0.0, "coverage_hours": 0.0, "complete": False}
+    full = bool(before)
+    if before:
+        left, right = before[-1], after[0]
+        if right[0] - left[0] > 2 * 3600 or right[1] < left[1]:
+            full = False
+            window = after
+        else:
+            fraction = (start - left[0]) / max(right[0] - left[0], 1)
+            window = [(start, left[1] + fraction * (right[1] - left[1]))] + after
+    else:
+        window = after
+    delta = 0.0
+    for left, right in zip(window, window[1:]):
+        if right[1] < left[1] or right[0] - left[0] > 2 * 3600:
+            full = False
+        delta += max(right[1] - left[1], 0)
+    elapsed = max(now - window[0][0], 0) / 3600
+    return {"delta": delta, "coverage_hours": min(elapsed, hours), "complete": full and elapsed >= hours}
+
+
 def recent_yield_metrics(
     state: Mapping[str, Any] | None,
     torrent_hash: str,
@@ -233,24 +283,27 @@ def recent_yield_metrics(
     now: Optional[float] = None,
     snapshots_by_hash: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None,
 ) -> dict:
-    """从累计上传量推导 1/6/24 小时真实增量和单位容量收益。"""
+    """从累计上传量推导 1/6/24 小时真实增量和单位容量收益。
+
+    附带每个窗口的完整性标记（upload_window_observed_{hours}h）：窗口未完整
+    观察时增量只反映已覆盖部分，消费方不得把零增量判定为"零收益"。
+    """
     timestamp = float(now or time.time())
     rows = [
         row for row in (snapshots_by_hash.get(str(torrent_hash), []) if snapshots_by_hash is not None else (state or {}).get("snapshots", []))
         if str(row.get("hash") or "") == str(torrent_hash)
         and _number(row.get("at")) <= timestamp
     ]
-    rows.sort(key=lambda row: _number(row.get("at")))
-    size_gb = max(_number(size), 0.0) / GIB
     result = {}
     for hours in (1, 6, 24):
-        target = timestamp - hours * 3600
-        eligible = [row for row in rows if _number(row.get("at")) <= target]
-        previous = eligible[-1] if eligible else None
-        delta = max(_number(uploaded) - _number(previous.get("uploaded")), 0.0) if previous else 0.0
-        elapsed = max((timestamp - _number(previous.get("at"))) / 3600.0, 0.0) if previous else 0.0
-        result[f"upload_delta_{hours}h"] = delta
-        result[f"yield_per_gb_{hours}h"] = (delta / GIB / size_gb / elapsed) if size_gb > 0 and elapsed > 0 else 0.0
+        measured = measure_upload_window(rows, uploaded=uploaded, now=timestamp, hours=hours)
+        result[f"upload_delta_{hours}h"] = measured["delta"]
+        result[f"yield_per_gb_{hours}h"] = (
+            measured["delta"] / GIB / (size / GIB) / measured["coverage_hours"]
+            if size > 0 and measured["coverage_hours"] > 0 else 0.0
+        )
+        result[f"upload_window_observed_{hours}h"] = measured["complete"]
+        result[f"upload_coverage_hours_{hours}h"] = measured["coverage_hours"]
     return result
 
 
@@ -260,7 +313,12 @@ def predict_yield(state: Mapping[str, Any] | None, item: Any) -> dict:
     features = current.get("features") or {}
     exact = features.get(feature_key(item)) or {}
     global_row = features.get("__all__") or {}
-    expected = _number(exact.get("ewma"), _number(global_row.get("ewma"), 0.0))
+    # 桶置信度混合（9.12.0-beta.2，移植上游 smart 1.5.0）：样本不足 20 的桶
+    # 按样本占比向全桶期望收缩，避免单样本桶孤立定值造成早期过拟合。
+    bucket_samples = int(exact.get("count") or 0)
+    bucket_confidence = min(bucket_samples / 20, 1.0)
+    global_expected = _number(global_row.get("ewma"), 0.0)
+    expected = _number(exact.get("ewma"), global_expected) * bucket_confidence + global_expected * (1 - bucket_confidence)
     global_recent = global_row.get("recent") or []
     median = _percentile(global_recent, 0.5) if global_recent else _number(global_row.get("ewma"), 0.0)
     if expected <= 0 and median <= 0:
@@ -272,8 +330,8 @@ def predict_yield(state: Mapping[str, Any] | None, item: Any) -> dict:
         "expected": expected,
         "median": median,
         "score": round(score, 2),
-        "confidence": learning_confidence(int(current.get("sample_count") or 0)),
-        "bucket_samples": int(exact.get("count") or 0),
+        "confidence": learning_confidence(int(current.get("sample_count") or 0)) * bucket_confidence,
+        "bucket_samples": bucket_samples,
     }
 
 

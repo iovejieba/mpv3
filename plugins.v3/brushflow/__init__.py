@@ -1,5 +1,6 @@
 import base64
 import copy
+import functools
 import json
 import re
 import threading
@@ -52,6 +53,12 @@ from .download_health import (
     policy_for_profile,
 )
 from .v9 import TaskConfigV9, migrate_task_rows_v9
+from .free_expiry import (
+    FREE_EXPIRY_BUFFER_SECONDS,
+    free_countdown_state,
+    parse_free_deadline,
+    select_free_expiry_targets,
+)
 from .presentation import build_health_summary, deletion_quota_message
 from .hr_strategy import (RequestThrottle, normalize_domain, parse_history_ledger,
                           resolve_rule, resolve_stats_parser, torrent_id_from_path)  # noqa: F401  导入即注册站点 H&R 规则与统计解析器
@@ -344,6 +351,10 @@ class BrushTaskConfig:
         # 9.11.10：达标/豁免即释放开关曾缺实例属性映射——9.11.5 影子守门器误读
         # task.release_on_maturity 触发 AttributeError（潜伏 4 天被逐行堆栈定罪）。
         self.release_on_maturity = bool(config.get("delete_release_on_maturity", False))
+        # 免费到期未完成处置（9.12.0 测试）：off/pause/delete，默认 off。
+        # 未知值回退 off——开关语义宁可保守，不猜。
+        free_expiry_action = self._clean_text(config.get("delete_free_expiry_action"))
+        self.free_expiry_action = free_expiry_action if free_expiry_action in ("off", "pause", "delete") else "off"
         self.rss_support = bool(config.get("rss_support", False))
         self.custom_rss_url = self._clean_text(config.get("custom_rss_url"))
         self.tag = self._clean_text(config.get("tag"))
@@ -938,7 +949,16 @@ class BrushFlow(_PluginBase):
             by_id = (self._site_hr_ledger_cache.get(ledger_domain) or {}).get("by_id") or {}
             if by_id:
                 ledger_lookup = by_id.get
-        recorder = self.record_exemption_deletion if site_rule else None
+        recorder = None
+        if site_rule:
+            site_row = SiteOper().get(task.site_id)
+            ledger_domain = normalize_domain(getattr(site_row, "domain", None) if site_row else None)
+            by_id = (self._site_hr_ledger_cache.get(ledger_domain) or {}).get("by_id") or {}
+            if by_id:
+                ledger_lookup = by_id.get
+        # 回调绑定任务 ID（签名契约：宿主方法需要 task_id，DeletionService 是
+        # 单任务上下文不应知道它——9.13.0-beta.1 曾因直接传绑定方法缺参炸循环）
+        recorder = functools.partial(self.record_exemption_deletion, task.id) if site_rule else None
         return DeletionService(
             repository=self._repository, operations=self._get_task_service(), document=self._task_documents[task_id],
             managed_tag=task.brush_tag,
@@ -2513,6 +2533,10 @@ class BrushFlow(_PluginBase):
             capacity_pressure=bool(capacity and current_size > (capacity_target or current_size)),
             readiness_message=str(readiness.get("message") or "容量高于目标，等待安全候选。"),
             task_enabled=task.enabled,
+            free_paused_count=sum(
+                1 for row in torrents.values()
+                if isinstance(row, dict) and not row.get("deleted") and row.get("free_paused")
+            ),
         )
         health = presentation["health"]
         recommended_actions = presentation["recommended_actions"]
@@ -2528,6 +2552,7 @@ class BrushFlow(_PluginBase):
             }
             for torrent_hash, row in torrents.items()
             if not row.get("deleted")
+            and not row.get("free_paused")  # 免费到期待处置是主动暂停，不进"需要关注"清单（防污染健康语义）
             and row.get("download_health") in {HEALTH_STALLED, HEALTH_SLOW, HEALTH_QUEUED, HEALTH_ERROR, HEALTH_PAUSED}
         ][:50]
         ui_summary = {
@@ -2978,6 +3003,15 @@ class BrushFlow(_PluginBase):
     @staticmethod
     def _torrent_to_task_record(torrent: TorrentInfo, site: Any, task: BrushTaskConfig) -> dict:
         """把站点候选种子转换为可持久化的任务记录"""
+        # 免费截止抓取（9.12.0）：倒计时文本只在抓取时刻有效，必须此刻换算成绝对时刻。
+        # 解析结果与原文都入库——测试期用原文日志核对两站实际格式，正式版再降噪。
+        raw_freedate = str(torrent.freedate or "").strip()
+        free_until = parse_free_deadline(raw_freedate, now=time.time())
+        if raw_freedate:
+            logger.info(
+                f"刷流任务 [{task.name}] 免费截止抓取：{torrent.title} "
+                f"原文[{raw_freedate}] → 解析[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(free_until)) if free_until else '未识别'}]"
+            )
         return {
             "task_id": task.id,
             "task_name": task.name,
@@ -2990,6 +3024,7 @@ class BrushFlow(_PluginBase):
             "page_url": torrent.page_url,
             "date_elapsed": torrent.date_elapsed,
             "freedate": torrent.freedate,
+            "free_until": free_until,
             "uploadvolumefactor": torrent.uploadvolumefactor,
             "downloadvolumefactor": torrent.downloadvolumefactor,
             "join_seeders": getattr(torrent, "seeders", None),
@@ -3341,6 +3376,10 @@ class BrushFlow(_PluginBase):
         self._save_current_task_data("torrents", torrent_tasks)
         history_before = self._current_task_data("smart_history", [])
         snapshot = {self.__get_hash(torrent): self.__get_torrent_info(torrent) for torrent in check_torrents}
+        # 免费到期未完成处置（9.12.0 测试）：独立维护通道，不经删种候选管线；
+        # 处置改变记录状态，实际处置过才回写 torrents
+        if self._run_free_expiry_sweep(task, torrent_tasks, snapshot, downloader):
+            self._save_current_task_data("torrents", torrent_tasks)
         plan = cleanup.sample_and_plan(snapshot=snapshot)
         if task.smart_enabled:
             self._update_smart_strategy_state(task, plan["observations"], history_before,
@@ -3595,6 +3634,9 @@ class BrushFlow(_PluginBase):
                 "color": cls._SEED_ACTION_COLORS.get(action, "default"),
                 "score": score,
                 "detail": detail or "暂无判定原因",
+                # 免费倒计时展示态（9.12.0）：多原因并列（同 9.7.8 健康徽章惯例），
+                # 健康归健康、处置归处置——只拼显示，不进健康判定
+                "free_note": free_countdown_state(record, now=time.time()),
             })
         rows.sort(key=lambda r: (cls._SEED_ACTION_RANK.get(r["action"], 9), -r["score"]))
         return rows[:limit]
@@ -3924,6 +3966,78 @@ class BrushFlow(_PluginBase):
             self.__log_and_send_torrent_task_update_message(
                 "【刷流任务状态更新】", "更新为已删除", "下载器中找不到对应种子", deleted_tasks
             )
+
+    def _free_expiry_site_is_full_hr(self, task: BrushTaskConfig) -> bool:
+        """全站 H&R 站判定：任务标记或站点策略规则命中即排除处置。
+
+        未完成即删在 H&R 站可能被记账，比多付下载量严重得多——宁可不做。
+        """
+        if task.site_hr_active:
+            return True
+        site = SiteOper().get(task.site_id)
+        domain = normalize_domain(site.domain) if site else None
+        return bool(domain and resolve_rule(domain))
+
+    def _run_free_expiry_sweep(
+        self,
+        task: BrushTaskConfig,
+        torrent_tasks: Dict[str, dict],
+        snapshot: Dict[str, dict],
+        downloader: Any,
+        now: Optional[float] = None,
+    ) -> int:
+        """免费到期未完成处置（9.12.0 测试）：到期（含缓冲）未下完 → 暂停/删除 + 通知。
+
+        - 只对 smart/rules 任务生效；策略线与全站 H&R 站明确排除；
+        - 动作 off/pause/delete 由任务级开关授权，默认 off；
+        - 不经过删种候选管线：未完成绝不自动删除是删种铁律（四道复核），
+          本通道是独立维护动作，靠任务级显式开关而非复核链授权；
+        - pause 一次性生效（free_paused 标记），用户手动恢复后不重复干扰；
+        - delete 直接移除并按插件删除归因入账（deletion_operation_id）。
+        返回实际处置颗数（调用方据此决定是否回写记录）。
+        """
+        action = getattr(task, "free_expiry_action", None) or "off"
+        if action not in ("pause", "delete") or task.delete_engine == "hr_policy":
+            return 0
+        if self._free_expiry_site_is_full_hr(task):
+            return 0
+        now_ts = float(now if now is not None else time.time())
+        targets = select_free_expiry_targets(torrent_tasks, snapshot, now=now_ts)
+        if not targets:
+            return 0
+        acted: List[dict] = []
+        for torrent_hash, target in targets.items():
+            row = torrent_tasks[torrent_hash]
+            try:
+                if action == "pause":
+                    if not downloader.stop_torrents(ids=[torrent_hash]):
+                        logger.warning(f"刷流任务 [{task.name}] 免费到期暂停未确认：{target['title']}，下轮重试")
+                        continue
+                    row["free_paused"] = True
+                    row["free_paused_time"] = time.time()
+                else:
+                    downloader.delete_torrents(ids=[torrent_hash], delete_file=bool(task.delete_data))
+                    row.update({
+                        "deleted": True,
+                        "deleted_time": time.time(),
+                        "deletion_operation_id": f"free-expiry-{uuid.uuid4().hex}",
+                        "delete_data": bool(task.delete_data),
+                    })
+            except Exception as err:
+                logger.warning(f"刷流任务 [{task.name}] 免费到期处置[{action}]失败：{target['title']}：{str(err)}")
+                continue
+            acted.append(row)
+            logger.info(f"刷流任务 [{task.name}] 免费到期处置[{action}]：{target['title']}"
+                        f"（{'已过期' if target['expired'] else '缓冲期内'}，截止 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(target['deadline']))}）")
+        if acted:
+            self._notify_free_expiry_result(action, acted)
+        return len(acted)
+
+    def _notify_free_expiry_result(self, action: str, rows: List[dict]) -> None:
+        """免费到期处置结果通知（暂停/删除共用四要素格式）"""
+        status = "已暂停（免费到期未下完）" if action == "pause" else "已删除（免费到期未下完）"
+        reason = "免费期已结束，防止过期后继续产生下载量"
+        self.__log_and_send_torrent_task_update_message("【刷流任务免费到期】", status, reason, rows)
 
     def __convert_torrent_info_to_task(self, torrent: Any) -> dict:
         """把下载器种子转换为当前任务的托管记录"""

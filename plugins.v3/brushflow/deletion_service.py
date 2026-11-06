@@ -477,10 +477,16 @@ class DeletionService:
                 self.write("torrents", records)
             # 离职复核登记（9.13）：策略站豁免删除进观察名单，随账本同步顺路核对
             # 删后校验期结果（T+2h10m/T+24h）。非策略站/无效 Tracker 清理不登记。
+            # 通知性回调永不阻断确认主链路（WIKI §8.6）：登记失败在宿主侧告警，
+            # 此处兜底静默——confirmed_removed 落账必须完成，否则条目停留
+            # unresolved 形成每轮重炸的循环（9.13.0-beta.1 实机教训）。
             if self.hr_policy and callable(self.exemption_deletion_recorder) and record:
-                self.exemption_deletion_recorder(
-                    str(torrent_id_from_path(str(record.get("page_url") or ""))),
-                    str(record.get("title") or item["hash"]))
+                try:
+                    self.exemption_deletion_recorder(
+                        str(torrent_id_from_path(str(record.get("page_url") or ""))),
+                        str(record.get("title") or item["hash"]))
+                except Exception:
+                    pass
         # Keep unresolved requests even past the accounting retention window.
         ledger = [row for row in ledger if self.clock() - number(row.get("at")) < 31 * 86400 or row.get("status") in UNRESOLVED_ITEMS]
         self.write("smart_deletions", ledger)
