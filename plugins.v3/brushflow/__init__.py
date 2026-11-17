@@ -1,6 +1,7 @@
 import base64
 import copy
 import functools
+import hashlib
 import json
 import re
 import threading
@@ -417,6 +418,7 @@ class BrushFlow(_PluginBase):
         "archived",
         "archived_totals",  # 9.11.15 归档折叠快照：离场归档记录的累计贡献（delete_task 时随任务清理）
         "hr_deletion_watchlist",  # 9.13 离职复核观察名单：豁免删除后随账本同步顺路核对
+        "download_failures",  # 9.13 下载失败退避表：候选级失败退避至次日（同步官方 6.1.6）
         "unmanaged",
         "statistic",
         "runs",
@@ -3586,6 +3588,7 @@ class BrushFlow(_PluginBase):
             "smart_release_hours": "做种时长已达赦免线，任务完成",
             "valuable_seed": "存在上传需求或资源稀缺，继续保留",
             "no_low_value_candidate": "没有通过安全线和连续确认的低价值候选",
+            "insufficient_upload_history": "上传观测窗口未满 24 小时（新加入或停机断档），暂缓删种判断",
             "byte_cap": "删除容量配额已用尽",
             "daily_count_cap": "每日删除数量配额已用尽",
             "run_count_cap": "单轮删除数量配额已用尽",
@@ -4142,11 +4145,88 @@ class BrushFlow(_PluginBase):
             logger.error(f"处理种子下载提示地址失败：{str(err)}")
             return torrent_url
 
+    @staticmethod
+    def __download_failure_key(torrent: Any) -> Optional[str]:
+        """按任务无关的候选身份生成退避指纹（同步官方 6.1.6，不含下载凭据）。"""
+        identity = "\x1f".join(
+            str(value or "")
+            for value in (
+                getattr(torrent, "site", None),
+                getattr(torrent, "page_url", None),
+                getattr(torrent, "title", None),
+                getattr(torrent, "size", None),
+                getattr(torrent, "pubdate", None),
+                getattr(torrent, "enclosure", None),
+            )
+        )
+        if not identity.strip("\x1f"):
+            return None
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+    def __active_download_failures(self) -> Dict[str, dict]:
+        """读取并清理尚未到期的下载退避记录（过期条目自动淘汰）。"""
+        stored = self._current_task_data("download_failures", {})
+        if not isinstance(stored, dict):
+            return {}
+        now = time.time()
+        active: Dict[str, dict] = {}
+        for key, record in stored.items():
+            if not isinstance(record, dict):
+                continue
+            try:
+                retry_after = float(record.get("retry_after", 0))
+            except (TypeError, ValueError):
+                continue
+            if retry_after > now:
+                active[str(key)] = record
+        if len(active) != len(stored):
+            self._save_current_task_data("download_failures", active)
+        return active
+
+    def __download_failure_reason(self, torrent: Any) -> Optional[str]:
+        """返回候选尚未结束的退避原因；过期记录由读取时自动清理。"""
+        key = self.__download_failure_key(torrent)
+        if not key:
+            return None
+        record = self.__active_download_failures().get(key)
+        if not record:
+            return None
+        reason = str(record.get("message") or "间接下载暂时退避").strip()
+        return reason or "间接下载暂时退避"
+
+    def __record_download_failure(self, torrent: Any, message: str) -> None:
+        """记录失败候选退避至本地次日 0 点，避免同一资源反复消耗站点额度。
+
+        指纹不含凭据；256 条上限按到期时间倒序裁剪（官方 6.1.6 同源方案）。
+        """
+        key = self.__download_failure_key(torrent)
+        if not key:
+            return
+        failures = self.__active_download_failures()
+        reason = str(message or "下载返回内容无效").strip()[:200]
+        next_day = (datetime.fromtimestamp(time.time()) + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        failures[key] = {"retry_after": next_day.timestamp(), "message": reason}
+        if len(failures) > 256:
+            failures = dict(
+                sorted(
+                    failures.items(),
+                    key=lambda item: float(item[1].get("retry_after", 0)),
+                    reverse=True,
+                )[:256]
+            )
+        self._save_current_task_data("download_failures", failures)
+
     def __download(self, torrent: TorrentInfo) -> Optional[str]:
         """按当前任务配置向 qBittorrent 或 Transmission 添加种子"""
         task = self._get_task_config()
         if not task or not torrent.enclosure:
             logger.error(f"获取种子下载链接失败：{torrent.title}")
+            return None
+        # 失败退避（同步官方 6.1.6）：命中当日退避的候选静默跳过——不走下载链、
+        # 不消耗站点额度、不触发宿主失败通知；次日 0 点自动解除。
+        if failure_reason := self.__download_failure_reason(torrent):
+            logger.info(f"刷流任务 [{task.name}] 跳过当日退避种子：{torrent.title}（{failure_reason}）")
             return None
         up_speed = int(task.up_speed) if task.up_speed else None
         down_speed = int(task.dl_speed) if task.dl_speed else None
@@ -4171,9 +4251,19 @@ class BrushFlow(_PluginBase):
             download_torrent = copy.copy(torrent)
             download_torrent.enclosure = torrent_content
             download_torrent.site_cookie = cookies
-            torrent_content, _, _ = DownloadChain().download_torrent(download_torrent)
+            failure_messages: List[str] = []
+            torrent_content, _, _ = DownloadChain().download_torrent(
+                download_torrent,
+                on_failure=lambda message: failure_messages.append(str(message or "")),
+            )
             if not torrent_content:
                 logger.error(f"刷流任务 [{task.name}] 获取有效种子文件失败：{torrent.title}")
+                failure_message = failure_messages[-1] if failure_messages else ""
+                if "站点限流" not in failure_message:
+                    # 候选级失败（登录页/确认页/无效内容）退避至次日，防止反复消耗站点额度；
+                    # 站点限流是额度级暂态（下轮自然重试），退避到次日反而误伤免费抢购。
+                    self.__record_download_failure(
+                        torrent, failure_message or "下载返回内容无效")
                 return None
         downloader = self.downloader
         service = self.service_info
