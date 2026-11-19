@@ -1470,14 +1470,16 @@ class AVHelper(_PluginBase):
             try:
                 catalogue = client.catalogue()
             except ltxlib.LtxError as error:
-                if error.kind == "cf" and conf["ltxFlare"]:
-                    # CF 边缘拦截：FlareSolverr 临时浏览器过盾收割 cookies（solve() 用完
-                    # 即弃，没有常驻浏览器）；同一 UA + cookies 直连重试一次。
+                if error.kind in ("cf", "verify") and conf["ltxFlare"]:
+                    # CF 边缘拦截 / 源站人机闸：FlareSolverr 临时浏览器过盾收割 cookies
+                    # （solve() 用完即弃，没有常驻浏览器）。FlareSolverr 的真浏览器上下文
+                    # 能过 Turnstile——SPA 在页面里完成验证后种下的 cookie 连同同一 UA
+                    # 带回直连请求，同出口 IP 下有机会直接放行（2026-11-20 实测路径）。
                     flare = flaresolverr.FlareSolverr(conf["ltxFlare"])
                     solved = flare.solve(conf["ltxSite"] + "/")
                     client.ingest_cookies(solved["cookies"], solved["userAgent"])
-                    logger.info(f"AVHelper LTX：FlareSolverr 过盾完成（HTTP {solved['status']}），"
-                                f"重试直连")
+                    logger.info(f"AVHelper LTX：FlareSolverr 过盾完成（HTTP {solved['status']}，"
+                                f"cookies {len(solved['cookies'])} 个），重试直连")
                     catalogue = client.catalogue()
                 else:
                     raise
