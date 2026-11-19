@@ -1,0 +1,375 @@
+<script setup lang="ts">
+/**
+ * 视图：任务（S6 第三个原生化视图）。
+ *
+ * 对照老实现 `ui/views/tasks.js`（`renderTasks` / `startDownload` / `loadTasks` /
+ * `startTaskPolling`）与它的调用方 `ui/app.js`（`bindUi` 的 nav 点击分支），逐条对齐的是
+ * **行为与文案**，DOM 换成 Vuetify 组件；候选表本体（列、行样式、下载按钮）在
+ * `common/CandTable.vue` 里逐列对齐 `candTable(t, idx)`，本视图只负责"画哪些任务"。
+ *
+ * | 老实现 | 这里 |
+ * | --- | --- |
+ * | `renderTasks`：`pend = S.tasks.filter(t => t.state === 'await')`，**只画待确认**，下载进度在「下载」页 | `pending` 同款过滤；本视图不画任何队列行 |
+ * | ~~`dling` 提示行~~：v0.2.7 已去掉「⏬ n 个已提交，进度看「下载」页」那行（下载进度看「下载」栏角标） | 同样不画；`store.downloading` 仍供左栏「下载」角标用 |
+ * | 右侧 `↻ 刷新任务` → `loadTasks(true)`（**非静默**：失败 toast「任务读取失败」）+ `toast('任务','正在刷新…')` | `store.refreshTasks(false)` + `t.info('正在刷新…')`；失败 `t.warning('任务读取失败：{原因}')`（写法照 S6-2 下载页对同一条 toast 的处理） |
+ * | `'<div class="secttl">待确认（' + pend.length + '）</div>'` | 同一句文案的小标题（`.avh-tasks__secttl` 对齐 `app.css` 的 `.secttl`） |
+ * | 每个待确认任务一块 `candTable(t, i)`；`bindDownloadButtons(m)` 事件委托 | `common/CandTable.vue`（`v-for`）+ `@download`；行内转圈由它自持，**只由这一行自己的结论结束**（见下） |
+ * | `startDownload` 失败 `toast('下载失败', r.message || '请稍后重试', 'warn')`，并把按钮 `disabled = false` | 底部提示条「{站点} 下载失败：{原因}」+ `clearRow(taskId, site)`（只解这一行） |
+ * | `startDownload` 成功 `toast('已提交下载', site + ' · 进度见「下载」页', 'ok')` + `loadTasks(true)` | 底部提示条「已提交下载：{站点} · 进度见「下载」页」+ 静默 `refreshTasks`；**不清转圈** —— store 已把该任务标成 `pushed`，卡片连同按钮一起消失 |
+ *
+ * **并发点击（2026-10-14 用户要求，别改回去）**：同一时间连点两三个任务的下载是高频正常操作，
+ * 不允许被拦。三条口径：① 闸门按行分（`usePluginStore.startDownload` 的 key 带任务 id + 站点）；
+ * ② 行内转圈只由这一行的结论结束（成功 = 卡片消失、失败 = `clearRow`），别的行完成、
+ * 手动「↻ 刷新任务」、5 秒轮询都不碰它；③ 结果提示走插件自带底部提示条（可叠 4 条），
+ * 一次结果一条 —— 宿主 toast 在右下角，并发时容易被看漏（用户原来那个"提示被吞掉"）。
+ * 老写法（全局 key + 按站点名在整页清）会：第二行被拒并弹「上一次操作还在进行中，请稍候」，
+ * 同时把第一行正在飞的转圈一起清掉。
+ * | 空态 `'<div class="empty">没有待确认的任务</div>'` | `EmptyState`，文案逐字一致 |
+ * | `queueMissingThumbs(pend)`（每轮最多补 3 个、补过的番号不再排队） | `common.queueMissingThumbs(api, pending)`，列表每次变化补一轮（补到的图由 `CandTable` 读共享的 `filledThumbs`） |
+ * | 轮询：`startTaskPolling()` 每 5 秒 `loadTasks(false)`，靠 `S.view` 是 tasks 或 downloads 判断"只在任务/下载页" | 本视图挂载且 `document.visibilityState === 'visible'` 时每 5 秒 `store.refreshTasks(true)`；**卸载或不可见即停**（与 S6-2 下载页同一套规则） |
+ * | 老 `bindUi` 的 nav 点击分支：切到任务/下载栏目立刻 `loadTasks(false)`（静默） | 挂载时补一次静默 `store.refreshTasks(true)`（下载页没补、靠 5 秒轮询兜住；任务页补上是因为待确认列表变化最快，见下面"与 S6-2 的一处不同"） |
+ *
+ * 0.6.0 加的两样（用户要求，见 `docs/AVHelper-下载流程交互设计.md`，都是"卡片内"改动、
+ * **不新增卡片也不新增弹窗**）：
+ * - 卡片头部按 `task.pending` 画标记：「PT/BT 待确认」/「所有源均未找到」，
+ *   取值口径在后端 `tasks.rule_verdict()`，前端不自己推断；
+ * - 没得挑的卡片（没有任何合格候选）多一颗「📌 订阅该影片」，走 `store.subscribeNumber`
+ *   （与详情抽屉那颗同一个动作，规则都是全局默认规则）。
+ *
+ * 与 S6-2 的一处不同（刻意，可回退）：挂载时多发一次静默 `GET plugin/tasks`，对齐老实现
+ * 「点左栏立刻 `loadTasks(false)`」那一行；它**不是**右栏概况刷新（见下），失败也不 toast。
+ *
+ * 刻意**不做**（老实现也没有，别顺手加）：
+ * - 不画下载队列：老任务页自从拆出「下载」页以后只剩待确认候选（`renderTasks` 只读 `S.tasks`）；
+ * - 不放「🔎 搜索 PT 站」（`ptSearch`）：那颗按钮长在**详情抽屉**里（`ui/views/detail.js`），
+ *   任务页从来没有搜种入口；它连带的 `renderPills()` + `loadTasks(true)` 等详情视图迁移时再处理；
+ * - 不加错误态组件：老实现读任务失败只有 toast（列表照旧显示，空就是空态），与 S6-2 下载页同一取舍；
+ * - 不在动作/轮询里刷右栏「运行概况」：老 `renderPills()` 是**本地计数、不发请求**，右栏本来就由壳的
+ *   `/bootstrap` 15 秒轮询负责；这里的角标全由 store 派生（`store.downloading` / `store.tasks`）；
+ * - 不按 `auto` / `source` / `state` 二次过滤或排序：老实现按 `S.tasks` 原样顺序画（`pushed` 等非
+ *   `await` 任务只是被过滤掉，不另画一行）。
+ */
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import CandTable from '../common/CandTable.vue'
+import EmptyState from '../common/EmptyState.vue'
+import { queueMissingThumbs } from '../common/common'
+import { pushBottomToast } from '../../composables/bottomToast'
+import { hostToast, type PluginApi } from '../../composables/usePluginApi'
+import { normKey } from '../../composables/downloadHistory'
+import type { PluginStore } from '../../composables/usePluginStore'
+import { PENDING_TASK_STATE, type SearchTask } from '../../composables/storeTypes'
+
+const props = withDefaults(
+  defineProps<{
+    /** 数据台单一数据源（`Console.vue` 建好后传进来）。 */
+    store: PluginStore
+    /** 本插件实例 id：给候选表里的封面拼图片代理地址用。 */
+    pluginId?: string
+    /**
+     * 用请求器补封面（`plugin/detail`，经 `common.queueMissingThumbs` 串行发）。
+     * 不传时本轮不补图，列表照常显示占位。
+     */
+    api?: PluginApi | null
+    /** 宿主 toast（`moviepilot:toast` 注入），拿不到时静默降级。 */
+    toast?: unknown
+  }>(),
+  { pluginId: '', api: null },
+)
+
+const t = hostToast(props.toast as any)
+
+/**
+ * 本视图发出的事件（`defineEmits` **必须传字符串数组**，见 AGENTS.md §5：
+ * 函数式写法编译出 `emits: <函数>`，事件静默失效）。
+ *
+ * `refreshSide` 是 0.9.1 加的：卡片上的「转到订阅并自动搜索」会立刻跑一次订阅检查，
+ * 那次检查会改「运行概况」里的检查次数 / 下次可检查时间 —— 通知壳刷一下右栏。
+ */
+const emit = defineEmits(['refreshSide'])
+
+/** 轮询间隔：与老 `startTaskPolling()` 的 5000ms 一致（后端搜种/下载状态本身就变得慢）。 */
+const POLL_MS = 5000
+
+/** 每张候选表的实例：`clearRow / clearAllPending` 由 `CandTable` 通过 `defineExpose` 暴露。 */
+const tables = ref<Array<InstanceType<typeof CandTable> | null>>([])
+
+/**
+ * 待确认的候选：老 `S.tasks.filter(t => t.state === 'await')`。
+ * **只认 `PENDING_TASK_STATE`**（`pushed` / `canceled` / `failed` 一律不画）；`submitting`
+ * （后端认领后的在途态）同样不画 —— 那几秒里再点也是被拒，失败会自己回到 `await`。
+ * 顺序照 store 原样。
+ */
+const pending = computed<SearchTask[]>(() => {
+  const all = Array.isArray(props.store.tasks.value) ? props.store.tasks.value : []
+  return all.filter(item => item.state === PENDING_TASK_STATE)
+})
+
+/** 行 key：老实现按数组顺序画、没有 key 概念；这里优先用任务 id，保证刷新时行不被重建。 */
+function rowKey(task: SearchTask, index: number): string {
+  return String(task.id ?? `${task.number || ''}#${index}`)
+}
+
+/** 已订阅的番号集合（`type='number'` 的订阅，按后端同一套番号归一化比对）。 */
+const subscribedKeys = computed<Set<string>>(() => {
+  const out = new Set<string>()
+  const subs = Array.isArray(props.store.subs.value) ? props.store.subs.value : []
+  for (const sub of subs) {
+    if (String(sub.type || '') !== 'number') continue
+    const key = normKey(sub.name)
+    if (key) out.add(key)
+  }
+  return out
+})
+
+/**
+ * 「📌 订阅该影片 / 转到订阅并自动搜索」的状态（0.6.0 起；0.9.1 扩到"零候选"）。
+ *
+ * 卡片里**有合格候选**就不画（那是"有得挑"，不是"没资源"）；没得挑时，
+ * 已订阅过 → `done`（禁用显示「已订阅」），否则 `ready`。
+ *
+ * 0.9.1 加的那条（用户 2026-10-27 报的「点击下载未搜索到资源时，待确认任务栏中缺少
+ * 『转到订阅并自动搜索』的功能入口」）：**一条候选都没有**的卡片（`pending === 'none'`，
+ * 也就是 PT 与 BT 都没搜到）除了卡片头那颗按钮，还在表内空行里画一颗
+ * 「📌 转到订阅并自动搜索」—— 用户看的就是那格「没有搜到任何候选」，入口长在视线落点
+ * 才不用满屏找。两个位置共用同一个状态与同一个动作，不会各说各话。
+ */
+function subscribeStateOf(task: SearchTask): 'hidden' | 'ready' | 'done' {
+  const cands = Array.isArray(task.cands) ? task.cands : []
+  if (cands.some(item => item.pass !== false)) return 'hidden'
+  const key = normKey(task.number)
+  if (!key) return 'hidden'
+  return subscribedKeys.value.has(key) ? 'done' : 'ready'
+}
+
+/**
+ * 只清被点的那一行（表内 key 是 `任务id|站点`，跨卡也不会误伤同站点的别的行）。
+ *
+ * 成功**不调**它：成功时卡片会随任务转 `pushed` 消失，转圈跟着没；
+ * 只有失败（和超时安全阀）才需要把那一行的转圈解下来。
+ */
+function clearRow(taskId: string, site: string): void {
+  tables.value.forEach(table => table?.clearRow(taskId, site))
+}
+
+/** 行内提示的站点前缀（并发时一眼分得清是哪一行；站点为空就不带前缀）。 */
+function sitePrefix(site: string): string {
+  const clean = String(site || '').trim()
+  return clean ? `${clean} · ` : ''
+}
+
+/**
+ * 手动刷新（老 `#btnRefreshTasks`）：先起请求**再**提示，顺序与老实现一致。
+ *
+ * 这一条走非静默（老实现传的就是 `loadTasks(true)`），失败时给 toast；
+ * 后台轮询一律静默，不把界面打成错误态。
+ *
+ * **不再顺手清行内转圈**：请求还在飞的行（任务在服务端仍是 `await`）必须继续转，
+ * 否则用户以为失败了又点一次，等于重复下单。
+ */
+async function refreshTasks(): Promise<void> {
+  const inflight = props.store.refreshTasks(false)
+  t.info('正在刷新…')
+  if (!(await inflight)) {
+    t.warning(`任务读取失败：${props.store.error.value || '请稍后重试'}`)
+  }
+}
+
+/**
+ * 行内「下载 / 仍要下载」：老 `bindDownloadButtons` → `startDownload(id, site, btn, force)`。
+ *
+ * 并发口径（2026-10-14）：每行各发各的请求、各转各的圈，互不阻塞也不互相清；
+ * 结果提示走插件自带底部提示条，一次结果一条，两条同时回来也都在。
+ */
+async function onDownload(payload: { taskId: string; site: string; force: boolean }): Promise<void> {
+  const res = await props.store.startDownload(payload.taskId, payload.site, payload.force)
+  // 同一行重复触发被 store 合并掉（正常点不出来）：静默，绝不能动那一行的转圈 ——
+  // 它属于还在飞的那一次请求。
+  if (res.kind === 'busy') return
+  if (!res.ok) {
+    clearRow(payload.taskId, payload.site)
+    pushBottomToast('warning', `${sitePrefix(payload.site)}下载失败：${res.message || '请稍后重试'}`)
+    return
+  }
+  // 成功不清转圈：store 已就地标成 `pushed`（卡片与按钮一起消失），再静默对齐一次服务端。
+  pushBottomToast('success', `已提交下载：${sitePrefix(payload.site)}进度见「下载」页`)
+  void props.store.refreshTasks(false)
+}
+
+/** 某一行等太久还没结论（`CandTable` 的安全阀）：只提示，不碰别的行、不取消请求。 */
+function onDownloadTimeout(payload: { taskId: string; site: string }): void {
+  pushBottomToast('warning', `${sitePrefix(payload.site)}下载提交超时：请刷新任务后重试`)
+}
+
+/** 行内「取消任务」：老 `cancelTask(tid, btn)`（后端置 `canceled`，任务与角标都不再算它）。 */
+async function onCancel(payload: { taskId: string }): Promise<void> {
+  const num = pending.value.filter(item => String(item.id ?? '') === payload.taskId)[0]?.number || ''
+  const res = await props.store.cancelTask(payload.taskId)
+  // 同一张卡重复触发被合并：静默，别解掉在飞那一次的转圈。
+  if (res.kind === 'busy') return
+  if (!res.ok) {
+    t.warning('取消任务失败')
+    t.info(res.message || '请稍后重试')
+  } else {
+    t.warning('已取消任务')
+    t.info(`${num ? num + ' · ' : ''}已从待确认里移除`)
+    // store 已用后端回传的任务表刷新（那条卡片消失），这里只解掉按钮的进行中态。
+    void props.store.refreshTasks(false)
+  }
+  // 只解被点的那张卡（连点两张卡时，先回来的那张不会把后一张的转圈清掉）。
+  tables.value.forEach(table => table?.clearCanceling(payload.taskId))
+}
+
+/**
+ * 卡片上的「📌 订阅该影片 / 转到订阅并自动搜索」（0.6.0 加；0.9.1 起**顺便立刻搜一次**）。
+ *
+ * 0.9.1 改了两处（用户 2026-10-27 反馈第 1 条）：
+ * 1. 走 `store.subscribeAndSearch()`：建订阅**之后立刻只检查这一条**，而不是等下一次 cron
+ *    —— 用户点这颗按钮的意思就是"现在就去找"；
+ * 2. 提示分三档（订阅成功/检查被限流/检查没跑成）而不是一律「订阅已创建」，
+ *    否则用户看到"已创建"却没有任何新任务，会以为又没生效。
+ *
+ * 规则仍是全局默认规则（`subscribeAndSearch` 不传 `rule` 时后端用 `global_rule()` 合并）。
+ */
+async function onSubscribe(payload: { taskId: string }): Promise<void> {
+  const task = pending.value.filter(item => String(item.id ?? '') === payload.taskId)[0]
+  const number = String(task?.number || '')
+  if (!number) {
+    t.warning('订阅失败')
+    t.info('这条任务缺少番号')
+  } else {
+    t.info(`正在订阅 ${number} 并立刻搜索…`)
+    const res = await props.store.subscribeAndSearch(number, 'number', String(task?.actor || ''))
+    if (res.kind === 'busy') {
+      // 同一番号重复触发被合并：静默（在飞的那一次会给结论），只解本卡的转圈。
+      tables.value.forEach(table => table?.clearSubscribing(payload.taskId))
+      return
+    }
+    if (!res.ok) {
+      t.warning('订阅失败')
+      t.info(res.message || '请稍后重试')
+    } else if (res.kind === 'limited') {
+      t.warning('订阅已创建')
+      t.info(res.message || `${number} · 这次检查被限流，等下一次订阅检查`)
+    } else if (res.kind === 'partial') {
+      t.warning('订阅已创建')
+      t.info(res.message || `${number} · 但这次检查没跑成`)
+    } else {
+      t.success('订阅已创建并检查完成')
+      t.info(`${number} · 有合格资源时会按规则自动下载`)
+      // 检查可能刚建了任务 / 下了单：静默对齐一次服务端，任务页与角标立刻能看见。
+      void props.store.refreshTasks(true)
+      emitRefreshSide()
+    }
+  }
+  tables.value.forEach(table => table?.clearSubscribing(payload.taskId))
+}
+
+/** 订阅检查会改动「运行概况」里的检查次数与下次可检查时间，通知壳刷一下右栏。 */
+function emitRefreshSide(): void {
+  // TasksView 原本不发 `refreshSide`（待确认列表不需要它），这里借用同一个事件名：
+  // 壳那边已经接了 `@refresh-side`，多一个来源不影响任何现有行为。
+  emit('refreshSide')
+}
+
+/** 每轮列表变化补一轮缺图：老实现是在 `renderTasks` 末尾调一次 `queueMissingThumbs(pend)`。 */
+watch(
+  pending,
+  (items) => {
+    if (props.api) queueMissingThumbs(props.api, items)
+  },
+  { immediate: true },
+)
+
+// ---------- 5 秒轮询（只在"本视图挂载 ＋ 页面可见"时跑） ----------
+
+/** `setInterval` 句柄；`null` = 当前没有轮询。 */
+let timer: number | null = null
+
+function startPolling(): void {
+  if (timer !== null) return
+  timer = window.setInterval(() => {
+    void props.store.refreshTasks(true)
+  }, POLL_MS)
+}
+
+function stopPolling(): void {
+  if (timer === null) return
+  window.clearInterval(timer)
+  timer = null
+}
+
+/** 切到别的标签页/最小化：立刻停（老实现靠浏览器节流，这里显式停，回来看时 5 秒内自会刷新）。 */
+function onVisibilityChange(): void {
+  if (document.visibilityState === 'visible') startPolling()
+  else stopPolling()
+}
+
+onMounted(() => {
+  // 老 `bindUi`：点左栏切到任务页时紧跟一次 `loadTasks(false)`（静默，失败不打扰）。
+  void props.store.refreshTasks(true)
+  if (document.visibilityState === 'visible') startPolling()
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
+onBeforeUnmount(() => {
+  // 卸载即停：切到别的栏目（原生视图或 iframe）都不该再打 `/tasks`。
+  stopPolling()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
+</script>
+
+<template>
+  <div class="avh-tasks">
+    <div class="avh-tasks__toolbar">
+      <div class="avh-tasks__spacer" />
+      <v-btn variant="outlined" size="small" @click="refreshTasks">↻ 刷新任务</v-btn>
+    </div>
+
+    <template v-if="pending.length">
+      <div class="avh-tasks__secttl">待确认（{{ pending.length }}）</div>
+      <CandTable
+        v-for="(task, index) in pending"
+        :key="rowKey(task, index)"
+        ref="tables"
+        :task="task"
+        :plugin-id="pluginId"
+        :subscribe-state="subscribeStateOf(task)"
+        cancelable
+        @download="onDownload"
+        @timeout="onDownloadTimeout"
+        @cancel="onCancel"
+        @subscribe="onSubscribe"
+      />
+    </template>
+
+    <EmptyState v-else text="没有待确认的任务" />
+  </div>
+</template>
+
+<style scoped>
+/* 对齐 `app.css` 的 `.toolbar` / `.hint` / `.spacer` */
+.avh-tasks__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.avh-tasks__hint {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.avh-tasks__spacer {
+  flex: 1;
+}
+
+/* 对齐 `.secttl`：12px、弱化色、字距 .4px（`margin-top` 与工具条的 margin-bottom 相叠） */
+.avh-tasks__secttl {
+  margin: 20px 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+</style>

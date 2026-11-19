@@ -1,0 +1,326 @@
+/**
+ * 数据台（数据层 + 通用组件）共用的接口形状。
+ *
+ * 字段名与取值**照抄后端**（`GET plugin/bootstrap`、`plugin/tasks`、`store.py` 与
+ * `scoring.py` 的实际返回），不许改名、不许"顺手补全"：老实现 `ui/views/*.js`
+ * 直接按这些名字取字段，改一个名字就是一次静默的功能缺失。
+ *
+ * 单独成文件的原因：`usePluginStore.ts` 与 `components/common/*.vue` 都要这些类型，
+ * 放在 store 里会让组件为一个类型去 import 整个 store。
+ */
+
+/** 宿主注入的插件请求器（`PluginDataDialog` 的 `api` prop）。 */
+export interface PluginApi {
+  /** GET：返回信封或裸数据，形状由插件自己决定（宿主原样透传）。 */
+  get<T = any>(url: string, config?: unknown): Promise<T>
+  post<T = any>(url: string, data?: unknown, config?: unknown): Promise<T>
+  /** DELETE / PUT 是可选能力，拿不到时动作返回错误而不是崩掉。 */
+  delete?<T = any>(url: string, config?: unknown): Promise<T>
+  put?<T = any>(url: string, data?: unknown, config?: unknown): Promise<T>
+}
+
+/**
+ * `ready` = 这次动作走完了业务分支；`busy` = 同一动作重复触发被合并掉；
+ * `partial` = **一半成了**（0.9.1 加）：订阅已建好、但紧跟的那次检查没跑成
+ * （限流或请求失败）—— 界面要说「订阅已创建，但这次检查没跑成」，不能报成全成功或全失败。
+ */
+export type ActionResultKind = 'ok' | 'limited' | 'busy' | 'partial' | 'error'
+
+/** 动作统一返回（界面据此决定 toast 文案与是否重绘）。 */
+export interface ActionResult<T = unknown> {
+  ok: boolean
+  kind: ActionResultKind
+  /** 可直接显示的中文文案（成功时也可能有，如后端返回的提示）。 */
+  message: string
+  data?: T
+  /** `POST plugin/check` 专用的限流标记：`true` = 本次检查被限流跳过。 */
+  limited?: boolean
+}
+
+/**
+ * 「待确认」任务的状态：只认 `await`。
+ *
+ * 后端 0.9.2 起多了一个 `submitting`（服务端认领任务后的**在途态**，保证一单只下一次）。
+ * 它不算待确认：提交失败会自己回到 `await`、成功就转 `pushed` 随卡片消失，那几秒里
+ * 不该让用户以为还有一张能点的卡。凡是按状态筛任务的地方都用这个常量，别再散写 `'await'`。
+ */
+export const PENDING_TASK_STATE = 'await'
+
+/** 搜索范围站点（`GET /sites` → `SiteSearcher.describe()`）。 */
+export interface SiteOption {
+  id?: string | number | null
+  name: string
+  adapter?: string
+  adapterLabel?: string
+}
+
+/** 收藏演员（`store.fav_list()`）。 */
+export interface FavActor {
+  name: string
+  zh?: string
+  avatar?: string
+}
+
+/** 订阅（`store.sub_list()`）：`rule` 是这条订阅自己的规则副本。 */
+export interface Subscription {
+  id?: number | string
+  type?: string
+  name?: string
+  rule?: RuleValue
+  hits?: number
+  /** 上次检查时间（`YYYY-MM-DD HH:MM:SS`）。 */
+  last?: string
+  created?: string
+}
+
+/** 通知（`store.notice_list()`）。 */
+export interface NoticeItem {
+  kind?: string
+  title?: string
+  type?: string
+  body?: string
+  meta?: string
+  image?: string
+  time?: string
+}
+
+/** 后端规则的宽松形态：字段可能缺省，展示/摘要一律按缺省兜底。 */
+export interface RuleValue {
+  res?: string
+  mustCnsub?: boolean
+  preferUncensored?: boolean
+  allow4k?: boolean
+  minSeeders?: number
+  sites?: string[]
+  prefSites?: string[]
+  btFallback?: boolean
+  trigger?: string
+  maxPerDay?: number
+  minIntervalMin?: number
+  savePath?: string
+  category?: string
+  downloader?: string
+  /** ---- 破解关键字词表（FEAT-20261120-01，与后端 scoring 同键名）---- */
+  crackKeywords?: string[]
+  requireCrackKeyword?: boolean
+  /** ---- LTX 库（2026-11-20 新源；与后端 `ltx_conf()` 同键名，都住在 global_rule kv）---- */
+  ltxEnabled?: boolean
+  /** 库地址；留空 = 官方 ltxlib.dpdns.org。 */
+  ltxSite?: string
+  /** FlareSolverr 地址（过 CF 盾收 cookies 用）；留空 = 直连。 */
+  ltxFlare?: string
+  /** 重爬间隔天数：1（每天，默认）或 2（隔天）。 */
+  ltxRefreshDays?: number
+}
+
+/** 候选种（`scoring.candidate_from_torrent` / `candidate_from_magnet`）。 */
+export interface Candidate {
+  /** `PT` = 站点候选，`BT` = javdb 磁力兜底。 */
+  src?: string
+  site?: string
+  spec?: string
+  cnsub?: boolean
+  uncensored?: boolean
+  size?: string
+  seeders?: number | null
+  free?: boolean
+  pref?: boolean
+  title?: string
+  /**
+   * 副标题（0.6.3 加）：站点发布者自己填的那一行（馒头 `smallDescr` / 肉丝 `subtitle`），
+   * **任务页候选行下面显示的就是它**。同一部片在同一站的多条记录种名往往一字不差
+   * （实测 SONE-565 在馒头 10 条里 6 条同名），副标题才是区分它们的那一行。
+   * BT 兜底与 0.6.3 之前的旧任务没有这个字段，此时界面回落显示 `title`（种子原名）。
+   */
+  sub?: string
+  /** 发布时间（站点原始格式，界面只取到日期）；BT 兜底没有。 */
+  pubdate?: string
+  /**
+   * 发布页地址（PT 站点的种子详情页，如 `https://kp.m-team.cc/detail/897325`）。
+   * 键名带下划线是后端 `tasks._collect()` 的既有存法（任务整份落库，老任务里也有它）；
+   * BT 兜底没有发布页，该字段为空串。
+   */
+  _page_url?: string
+  score?: number | string | null
+  pass?: boolean
+  breakdown?: string
+  picked?: boolean
+  res?: string
+  group?: string
+}
+
+/** 搜种任务（`TaskEngine.build_task` / `store.task_list`）。 */
+export interface SearchTask {
+  id?: string
+  number?: string
+  actor?: string
+  cands?: Candidate[]
+  /** `await` = 待确认；提交下载后后端改成 `pushed`。 */
+  state?: string
+  reason?: string
+  thumb?: string
+  /** 订阅自动下载命中的任务。 */
+  auto?: boolean
+  rule?: RuleValue
+  /** `manual` = 手动搜索，`sub` = 订阅检查。 */
+  source?: string
+  /**
+   * 任务卡上的标记（0.6.0 加，口径见后端 `tasks.rule_verdict()`）：
+   * `''` = 普通待确认（有候选可挑）、`pt-only` = 「PT/BT 待确认」（PT 没中且兜底关着）、
+   * `none` = 「所有源均未找到」（PT 与 BT 都没有可用资源）。老任务没有这个字段。
+   */
+  pending?: string
+}
+
+/** 下载队列项（`store.kv_get(QUEUE_KEY)` + 下载器进度回填 + 读侧投影追加的字段）。 */
+export interface QueueItem {
+  id?: string
+  number?: string
+  thumb?: string
+  site?: string
+  spec?: string
+  size?: string
+  hash?: string
+  downloader?: string
+  category?: string
+  savePath?: string
+  /**
+   * 队列行状态：
+   * - `down` = 下载中；
+   * - `done` = 已完成（进度到 100 或下载器说在 做种/upload）——随即入台账并摘行；
+   * - `failed` = 种子自己报的失败态（error / missingFiles / unknown，见后端 `_failure_reason()`）；
+   * - `canceled` = **用户点了「取消下载」**，种子已从下载器删掉、**行留在原位**等用户选出口
+   *   （换资源 / 不要了 / 移除）。这个状态的条目对下载器读数免疫（后端 `_merge_queue` 整条跳过）。
+   */
+  state?: string
+  /** 百分比整数（0–100）。 */
+  progress?: number
+  added?: string
+  /** —— 以下都是**后端给了才画**的可选字段（老后端没有就整行不画，绝不编造）。 */
+  /** 失败原因（`state === 'failed'` 时后端记的）。 */
+  failed_reason?: string
+  /** 版本角标（数组或字典，两种写法都认）。 */
+  version_tags?: unknown
+  /** 版本角标（后端拼好的字符串，优先于 `version_tags`）。 */
+  badge?: string
+  version_count?: number
+  /** 取消时间（`state === 'canceled'` 时后端记的）。 */
+  canceled_at?: string
+  /** 取消时那一步的说明（例如"已从下载器删除 1 个种子（含已下载的部分文件）"）。 */
+  canceled_detail?: string
+  /** 影片标题（读侧统一投影追加；队列行拿不到时不画）。 */
+  title?: string
+  /** 影片封面/海报（投影口径；`thumb` 仍是小竖图）。 */
+  poster?: string
+  cover?: string
+  /** 演员数组（投影口径；队列行一般用不到，留给密度更高的用法）。 */
+  actors?: unknown
+  /** 三段状态（投影口径：`{download, library, scrape}`）。 */
+  states?: Record<string, string>
+  /** 下载速度（`12.3 MB` 这类可读串，后端从下载器读数里抄的 `dlspeed`）。 */
+  speed?: string
+  /** 剩余时间（`8m` 这类可读串，后端抄的 `left_time`）。 */
+  eta?: string
+}
+
+/** `GET plugin/bootstrap` 的返回（已实测可用，S6 的单一数据源）。 */
+
+/** `GET plugin/bootstrap` 的返回（已实测可用，S6 的单一数据源）。 */
+export interface BootstrapPayload {
+  enabled?: boolean
+  sites?: SiteOption[]
+  favs?: FavActor[]
+  /** 演员自定义备注：`{演员原名: 备注}`（`store.alias_map()`，只含非空项）。与收藏无关。 */
+  aliases?: Record<string, string>
+  subs?: Subscription[]
+  /** 已知番号（订阅快照/已下载）。 */
+  known?: string[]
+  notices?: NoticeItem[]
+  tasks?: SearchTask[]
+  queue?: QueueItem[]
+  /** 后端字段名就是 `defaultRule`（不是 `rule`）。 */
+  defaultRule?: RuleValue
+  cacheSize?: number
+  cacheSizeText?: string
+  check?: unknown
+}
+
+/** 后端 `store.DEFAULT_RULE` 的镜像：`bootstrap.defaultRule` 拿不到字段时的兜底。 */
+export const RULE_FALLBACK: RuleValue = {
+  res: '1080p',
+  mustCnsub: false,
+  preferUncensored: true,
+  allow4k: true,
+  minSeeders: 3,
+  sites: [],
+  prefSites: ['馒头', 'Rousi'],
+  btFallback: true,
+  // 保存路径与下载器留空 = 用 MoviePilot 的下载器默认值（后端 tasks.DEFAULT_RULE 同口径）
+  savePath: '',
+  category: 'avi',
+  downloader: '',
+  trigger: 'notify',
+  maxPerDay: 6,
+  minIntervalMin: 240,
+  // 破解关键字词表默认（FEAT-20261120-01；后端 tasks.DEFAULT_RULE 同口径）
+  crackKeywords: [],
+  requireCrackKeyword: false,
+  // LTX 库默认（与后端 `ltx_conf()` 回落值同口径；sameRule 按这份的键集合做脏比较）
+  ltxEnabled: true,
+  ltxSite: '',
+  ltxFlare: '',
+  ltxRefreshDays: 1,
+}
+
+/**
+ * 站点清单兜底：老实现 `core/state.js` 的 `S.sites` 初值（12 个站点，id 全空）。
+ * `bootstrap` 与 `/sites` 都拿不到站点时用它，免得站点选择区一片空白。
+ */
+export const SITES_FALLBACK: SiteOption[] = [
+  { id: '', name: '馒头' },
+  { id: '', name: '观众' },
+  { id: '', name: '我堡' },
+  { id: '', name: '高清杜比' },
+  { id: '', name: 'GGPT' },
+  { id: '', name: '麒麟' },
+  { id: '', name: '象站' },
+  { id: '', name: '织梦' },
+  { id: '', name: '皇后' },
+  { id: '', name: 'PTS' },
+  { id: '', name: 'UBits' },
+  { id: '', name: 'Rousi' },
+]
+
+/** 规则归一：只补缺省键，不改已有值（`minIntervalMin` 也不许被界面放宽）。 */
+export function toRule(raw: unknown): RuleValue {
+  const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const merged: RuleValue = { ...RULE_FALLBACK }
+  ;(Object.keys(RULE_FALLBACK) as (keyof RuleValue)[]).forEach(key => {
+    const value = src[key]
+    if (value === undefined || value === null) return
+    // 数组要复制一份，避免 resolve 出来的规则与 bootstrap 返回体共享同一个数组。
+    ;(merged as Record<string, unknown>)[key] = Array.isArray(value) ? value.slice() : value
+  })
+  return merged
+}
+
+/** 老实现 `esc()` 的等价替换（Vue 插值自带转义，只在需要拼 HTML 时用）。 */
+export function escapeHtml(value: unknown): string {
+  return String(value === null || value === undefined ? '' : value).replace(
+    /[&<>"]/g,
+    char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char] as string,
+  )
+}
+
+/** 老实现 `core/util.js` 的 `shortTime()`：ISO 时间戳显示成 `YYYY-MM-DD HH:MM`。 */
+export function shortTime(value: unknown): string {
+  const text = String(value === null || value === undefined ? '' : value)
+  if (!text) return '—'
+  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) return text.replace('T', ' ').slice(0, 16)
+  return text
+}
+
+/** 老实现 `core/util.js` 的 `nowStr()`：`HH:MM:SS`（本地时间，24 小时制）。 */
+export function nowStr(): string {
+  return new Date().toLocaleTimeString('zh-CN', { hour12: false })
+}

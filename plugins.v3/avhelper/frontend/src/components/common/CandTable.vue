@@ -1,0 +1,830 @@
+<script setup lang="ts">
+/**
+ * 候选种表格（列、顺序、文案、行样式全部照抄 `views/tasks.js` 的 `candTable(t, idx)`）。
+ *
+ * 老实现的 DOM：
+ * ```
+ * <div class="q" style="padding:0;overflow:hidden">
+ *   <div class="thd">
+ *     <div class="tposter" data-num>{封面}</div>
+ *     <div><div class="tno">{番号}</div><div class="hint">来自订阅：{演员} · 搜到 n · 合格 m</div></div>
+ *     <div style="flex:1"></div>
+ *     [订阅为自动下载，但无候选合格]
+ *     [待确认标记 chip「PT/BT 待确认」/「所有源均未找到」 ← 0.6.0 加]
+ *     [📌 订阅该影片 ← 0.6.0 加，只有"没得挑"的卡片才画]
+ *     [取消任务]
+ *   </div>
+ *   <table><colgroup>7 个 col</colgroup><thead><tr>
+ *     站点 | 标记 | 规格 | 大小 | 做种 | 匹配分 | 操作
+ *   </tr></thead><tbody>
+ *     PT 行…（合格行绿底、淘汰行淡化、BT 行深底）
+ *     [— PT 没有合格候选，以下为 BT 磁力兜底 —]
+ *     BT 行…
+ *     [没有搜到任何候选]
+ *   </tbody></table>
+ * </div>
+ * ```
+ * 行样式语义（`app.css`）：`tr.best` = 被规则选中的最佳候选、`tr.dead` = 被淘汰、
+ * `tr.bt` = BT 兜底行；每行下面还有一条 `tr.candsub`。
+ *
+ * **副标题行（0.6.3 改，用户要求）**：老实现这条副行画的是**种子原名**（`cand.title`），
+ * 而同一部片在同一站的多条记录种名往往一字不差（实测 SONE-565 在馒头 10 条里 6 条同名，
+ * 用户原话「大多数资源都一样」），于是它等于把已经知道的片名又抄了一遍。
+ * 现在改成：
+ * - 主文本 = **站点副标题** `cand.sub`（馒头 `smallDescr` / 肉丝 `subtitle`），
+ *   例如「S1美女20周年纪念版 4k x265 简体中文软字幕 + 演员清单」——真正区分这一条的那行；
+ * - 右侧 = **发布时间**（只到日期，`cand.pubdate`）：老片的重发/新种靠它分先后；
+ * - 副标题缺失时（BT 兜底、0.6.3 之前的旧任务）回落显示种子原名，与老行为一致；
+ * - 种名与副标题都进 `title` 提示（鼠标悬停看全），信息一条不丢。
+ * **不是**「再抄一遍主标题」：主标题由卡片头的番号/片名负责，这一行只放站点侧信息。
+ *
+ * **「原帖」链接（0.6.3 加，用户要求）**：每行「下载」按钮前多一个 `原帖` 链接，
+ * 打开该条种子在 PT 站点的发布页（发布者、简介、截图、做种明细都在那边）。
+ * 只认 `http(s)` 绝对地址：馒头站点的 `page_url` 由「站点 url + /detail/{id}」拼成，
+ * 站点没配 url 时会拼出 `/detail/123` 这种相对地址 —— 那种不画链接（点了只会落到 MP 的 404）。
+ *
+ * 与老实现的两处**有意为之**的排版差异（老实现的 9 列在真实数据下横向过宽，
+ * 被卡片 `.avh-cand{overflow:hidden}` 裁掉右侧，「下载」按钮整个看不见）：
+ *
+ * 1. 老实现把「中字」「破解」各占一列，于是每一行都固定渲染「有/无」和「破解/—」，
+ *    既占两列宽度又几乎全是无信息量的占位符。现在合并成第 2 列「标记」，**只画存在的
+ *    标签**（顺序 `中字 → 破解 → 免费 → 优先站`，复用同一套 `.avh-tag*` 配色），
+ *    四个都没有才画一个弱化的 `—`；「标记」列吃剩余宽度（`auto`），标签少也不会撑宽表格。
+ * 2. 表格改用 `table-layout: fixed` + `<colgroup>` 显式列宽。固定布局下浏览器只按列宽
+ *    分配，不会让长内容（规格串、站点名）把表格撑过容器，因此宽度严格等于容器宽度、
+ *    最后一列「操作」永远不会被挤出卡片右侧；代价是内容不再撑列，`th`/`td` 必须自带
+ *    `overflow:hidden` + `text-overflow:ellipsis`（标题行 `.avh-cand__ttl` 同理）。
+ *
+ * 行为差异：老实现用 `data-dl` / `data-task` / `data-force` 属性 + `bindDownloadButtons()`
+ * 事件委托，并在点击时把按钮 `disabled`；Vue 里改成 `download` 事件 + 组件内
+ * 按站点记 in-flight（按钮转圈禁用），点击语义（含「仍要下载」的 `force`）不变。
+ *
+ * **行内转圈的生死（2026-10-14 修，用户要求）**：转圈从点击起一直转到**这一行自己的结论**——
+ * - 成功：卡片随任务转 `pushed` 从「待确认」里消失，组件卸载，转圈跟着没了（父组件**不**出手清）；
+ * - 失败：父组件调 `clearRow(taskId, site)`，**只**解这一行；
+ * - 别的行完成 / 手动「刷新任务」/ 5 秒轮询：一律不碰它；
+ * - 兜底：超过 `WATCHDOG_MS` 还没有结论（宿主那条请求挂了又没超时）只解这一行并发 `timeout`，
+ *   免得那颗按钮永久点不动。
+ * `clearRow` 只认 `任务id|站点` 这一个 key；老写法按站点名在**整页**清，点第二张卡的「馒头」
+ * 会把第一张卡正在飞的「馒头」一起解掉（用户报的"只转几秒就停止"）。
+ */
+import { computed, onBeforeUnmount, ref } from 'vue'
+import Thumb from './Thumb.vue'
+import { filledThumbs, scoreLevel } from './common'
+import type { Candidate, SearchTask } from '../../composables/storeTypes'
+import { safeUrl } from '../../composables/safeUrl'
+
+const props = withDefaults(
+  defineProps<{
+    /** 任务体（含番号、封面、来源与候选）。 */
+    task: SearchTask
+    /** 本插件实例 id（传给 Thumb 拼图片代理）。 */
+    pluginId?: string
+    /** 是否画「取消任务」（只有任务页那颗；站点搜索页不画）。 */
+    cancelable?: boolean
+    /**
+     * 「📌 订阅该影片」按钮的状态（0.6.0 加）：
+     * `hidden` = 不画（这张卡片有得挑，不需要订阅等资源）、`ready` = 可点、`done` = 已订阅（禁用）。
+     */
+    subscribeState?: 'hidden' | 'ready' | 'done'
+  }>(),
+  { pluginId: '', cancelable: false, subscribeState: 'hidden' },
+)
+
+const emit = defineEmits<{
+  /** 点「下载」/「仍要下载」：`force=true` 表示下载被规则淘汰的候选。 */
+  (event: 'download', payload: { taskId: string; site: string; force: boolean }): void
+  /** 某一行等太久还没有结论（`WATCHDOG_MS`）：父组件提示一句，别的行不受影响。 */
+  (event: 'timeout', payload: { taskId: string; site: string }): void
+  /** 点「取消任务」：把这条待确认任务从任务页与角标里去掉。 */
+  (event: 'cancel', payload: { taskId: string }): void
+  /** 点「📌 订阅该影片」：由任务页去建一条番号订阅（组件自己不碰 store）。 */
+  (event: 'subscribe', payload: { taskId: string }): void
+}>()
+
+/**
+ * 渲染行：候选行，或 BT 兜底说明行。
+ *
+ * `btnote` 行也带一个空 `cand`，只为让模板里两个分支引用同一个字段（说明行不读它），
+ * 免得在模板里到处写空值判断。
+ */
+interface Row {
+  kind: 'cand' | 'btnote'
+  key: string
+  cand: Candidate
+}
+
+/** 正在提交的站点：老实现只禁用被点的那个按钮，这里按"任务+站点"记，别锁整表。 */
+const pending = ref<Record<string, boolean>>({})
+
+const cands = computed<Candidate[]>(() => (Array.isArray(props.task.cands) ? props.task.cands : []))
+const passedCount = computed(() => cands.value.filter(item => item.pass !== false).length)
+const taskId = computed(() => String(props.task.id ?? ''))
+
+/**
+ * PT 候选 → [BT 兜底说明行] → BT 候选（老实现 `pt.map(...) + btNote + bt.map(...)` 的同一顺序）。
+ * 说明行只在真有 BT 候选时出现。
+ */
+const rows = computed<Row[]>(() => {
+  const pt = cands.value.filter(item => item.src !== 'BT')
+  const bt = cands.value.filter(item => item.src === 'BT')
+  const out: Row[] = pt.map((cand, index) => ({ kind: 'cand', key: `pt-${index}`, cand }))
+  if (bt.length) {
+    out.push({ kind: 'btnote', key: 'bt-note', cand: {} })
+    bt.forEach((cand, index) => out.push({ kind: 'cand', key: `bt-${index}`, cand }))
+  }
+  return out
+})
+
+/** `来自订阅：演员` / `手动搜索 · 演员：演员`（老实现 `origin` 的逐字文案）。 */
+const origin = computed(() => {
+  const actor = props.task.actor ? String(props.task.actor) : ''
+  if (props.task.source === 'sub') return `来自订阅${actor ? `：${actor}` : ''}`
+  return `手动搜索${actor ? ` · 演员：${actor}` : ''}`
+})
+
+function isPass(cand: Candidate): boolean {
+  return cand.pass !== false
+}
+
+/**
+ * 「标记」列的标签（列合并后由 `中字`/`破解`/`免费`/`优先站` 四类拼成）。
+ *
+ * 顺序固定：中字 → 破解 → 免费 → 优先站。**只返回存在的标签**：老实现「中字」列
+ * 每行都画「有/无」、「破解」列每行都画「破解/—」，两个占位符吃掉两列宽度却没有信息量。
+ * 四个都没有时返回空数组，由模板画一个弱化的 `—`（沿用 `.avh-cand__hint` 的观感）。
+ */
+function marks(cand: Candidate): Array<{ text: string; cls: string }> {
+  const out: Array<{ text: string; cls: string }> = []
+  if (cand.cnsub) out.push({ text: '中字', cls: 'avh-tag--on' })
+  if (cand.uncensored) out.push({ text: '破解', cls: 'avh-tag--uc' })
+  if (cand.free) out.push({ text: '免费', cls: 'avh-tag--free' })
+  if (cand.pref) out.push({ text: '优先站', cls: 'avh-tag--pref' })
+  return out
+}
+
+/** 行 class：`best`/`dead`/`bt` + 有副行时加 `has-sub`（老实现按 `title`，现在按副行的实际内容）。 */
+function rowClass(cand: Candidate): string[] {
+  return [
+    cand.picked ? 'best' : '',
+    isPass(cand) ? '' : 'dead',
+    cand.src === 'BT' ? 'bt' : '',
+    subText(cand) ? 'has-sub' : '',
+  ].filter(Boolean)
+}
+
+function titleOf(cand: Candidate): string {
+  return String(cand.title || '').trim()
+}
+
+/**
+ * 副行主文本：**站点副标题**优先，没有才回落种子原名（0.6.3 起；老实现只有后者）。
+ * 两者都没有时返回空串，模板据此不画这一行（与老实现「`title` 缺了就不画」同一口径）。
+ */
+function subText(cand: Candidate): string {
+  return String(cand.sub || '').trim() || titleOf(cand)
+}
+
+/**
+ * 发布时间只取日期：站点给的是 `2025-06-21 20:02:12`（馒头）/ `2025-06-21T20:02:12`（肉丝），
+ * 时间部分对「这条是哪一版、比另一条新还是旧」没有帮助，挤在行尾只是噪音。
+ */
+function dateText(cand: Candidate): string {
+  const match = /(\d{4}-\d{2}-\d{2})/.exec(String(cand.pubdate || ''))
+  return match ? match[1] : ''
+}
+
+/**
+ * 副行的悬停提示：副标题 + 种子原名 + 发布时间，逐行换行。
+ * 副行本身是单行省略号（`table-layout: fixed` 下只能这样），全量信息靠这里兜住。
+ */
+function metaTip(cand: Candidate): string {
+  const parts = [subText(cand)]
+  const title = titleOf(cand)
+  if (title && title !== subText(cand)) parts.push(title)
+  const date = dateText(cand)
+  if (date) parts.push(date)
+  return parts.filter(Boolean).join('\n')
+}
+
+/**
+ * 「原帖」地址：只认 http(s) 绝对地址，其余（空串、`/detail/123` 这类相对地址）返回空串。
+ * BT 兜底候选没有发布页，自然也不画。判据统一走 `safeUrl()`（与 `lib.url` 那些动态链接同一套）。
+ */
+function postUrl(cand: Candidate): string {
+  return safeUrl(cand._page_url)
+}
+
+/** 做种数：BT 兜底行显示「未知」，PT 行 null/undefined 显示 `—`（老实现逐字）。 */
+function seedersText(cand: Candidate): string {
+  if (cand.src === 'BT') return '未知'
+  return String(cand.seeders === null || cand.seeders === undefined ? '—' : cand.seeders)
+}
+
+/** 匹配分：淘汰行显示「淘汰」，其余 `—` 表示后端没给分。 */
+function scoreText(cand: Candidate): string {
+  if (!isPass(cand)) return '淘汰'
+  return String(cand.score === null || cand.score === undefined ? '—' : cand.score)
+}
+
+function siteKey(cand: Candidate): string {
+  return `${taskId.value}|${String(cand.site || '')}`
+}
+
+/**
+ * 行内转圈的安全阀：这么久还没有结论就只解这一行（**不取消请求**，真结果后到照样由父组件处理）。
+ *
+ * 正常情况走不到这里：请求落地（成功→卡片消失 / 失败→`clearRow`）或者卡片因轮询消失，
+ * 都会先把定时器收掉。留着它只为"宿主那条请求永远不落地"时那颗按钮不会变成死按钮。
+ */
+const WATCHDOG_MS = 180_000
+
+/** 行 key → 看门狗句柄。 */
+const watchdogs = new Map<string, number>()
+
+function disarmWatchdog(key: string): void {
+  const timer = watchdogs.get(key)
+  if (timer === undefined) return
+  window.clearTimeout(timer)
+  watchdogs.delete(key)
+}
+
+function armWatchdog(key: string, payload: { taskId: string; site: string }): void {
+  disarmWatchdog(key)
+  watchdogs.set(
+    key,
+    window.setTimeout(() => {
+      watchdogs.delete(key)
+      if (!pending.value[key]) return
+      const next = { ...pending.value }
+      delete next[key]
+      pending.value = next
+      emit('timeout', payload)
+    }, WATCHDOG_MS),
+  )
+}
+
+function onDownload(cand: Candidate): void {
+  const key = siteKey(cand)
+  // 同一行重复点击（连点/`loading` 期间按钮仍可点）合并掉：一次点击只发一个请求。
+  if (pending.value[key]) return
+  pending.value = { ...pending.value, [key]: true }
+  const payload = { taskId: taskId.value, site: String(cand.site || ''), force: !isPass(cand) }
+  armWatchdog(key, { taskId: payload.taskId, site: payload.site })
+  emit('download', payload)
+}
+
+/** 「取消任务」在飞（老实现只把按钮置灰，见 `cancelTask` 里的 `btn.disabled = true`）。 */
+const canceling = ref(false)
+
+/** 点「取消任务」：老 `data-cancel` 那颗按钮（文案与 title 逐字一致）。 */
+function onCancel(): void {
+  if (canceling.value || !taskId.value) return
+  canceling.value = true
+  emit('cancel', { taskId: taskId.value })
+}
+
+/** 解除「取消任务」的进行中态（成功失败都要调，否则按钮永远转圈）；只认本卡。 */
+function clearCanceling(id?: string): void {
+  if (id !== undefined && String(id) !== taskId.value) return
+  canceling.value = false
+}
+
+/**
+ * 任务卡上的待确认标记（0.6.0 加）—— 取值口径与后端 `tasks.rule_verdict()` 的
+ * `pending` 一一对应，前端不自己推断（`''` = 有候选可挑，不画标记）：
+ * `pt-only` = PT 没搜到且 BT 兜底关着；`none` = PT 与 BT 都没有可用资源。
+ */
+const pendingMark = computed<{ text: string; color: string; hint: string } | null>(() => {
+  const kind = String(props.task.pending || '')
+  if (kind === 'pt-only') {
+    return { text: 'PT/BT 待确认', color: 'info', hint: 'PT 没搜到，BT 兜底已关闭' }
+  }
+  if (kind === 'none') {
+    return { text: '所有源均未找到', color: 'warning', hint: 'PT 与 BT 都没有可用资源' }
+  }
+  return null
+})
+
+/** 「📌 订阅该影片」在飞：与取消任务同一套"自己置灰、动作结束后由父组件解锁"。 */
+const subscribing = ref(false)
+
+function onSubscribe(): void {
+  if (subscribing.value || !taskId.value) return
+  subscribing.value = true
+  emit('subscribe', { taskId: taskId.value })
+}
+
+/** 解除「订阅该影片」的进行中态（成功失败都要调）；只认本卡。 */
+function clearSubscribing(id?: string): void {
+  if (id !== undefined && String(id) !== taskId.value) return
+  subscribing.value = false
+}
+
+/**
+ * 解除**指定那一行**的进行中态（失败时由父组件调；成功不用调 —— 卡片会随任务消失）。
+ *
+ * 只认 `任务id|站点` 这一个 key：别的行（哪怕站点名一模一样）不受影响。
+ */
+function clearRow(id: string, site: string): void {
+  const key = `${String(id ?? '')}|${String(site ?? '')}`
+  disarmWatchdog(key)
+  if (!pending.value[key]) return
+  const next = { ...pending.value }
+  delete next[key]
+  pending.value = next
+}
+
+/** 整表解锁（站点搜索页重搜一次时用：那一页的整块结果都要换新）。 */
+function clearAllPending(): void {
+  watchdogs.forEach(timer => window.clearTimeout(timer))
+  watchdogs.clear()
+  pending.value = {}
+}
+
+defineExpose({ clearRow, clearAllPending, clearCanceling, clearSubscribing })
+
+/** 卸载（卡片消失、切栏目）：把看门狗收干净，别让定时器挂在已销毁的组件上。 */
+onBeforeUnmount(() => {
+  watchdogs.forEach(timer => window.clearTimeout(timer))
+  watchdogs.clear()
+})
+
+/**
+ * 封面地址：任务自带优先，其次用 `queueThumb` 后台补回来的那张。
+ *
+ * 老实现是 `applyThumb()` 直接把结果回写进 `S.task.siteTask` 再重绘；
+ * 这里改成读共享的 `filledThumbs`，所以**任何**用 CandTable 的视图
+ * （站点搜索、任务页）都能拿到补图，不必各自回写。
+ */
+const poster = computed(() => {
+  const own = String(props.task?.thumb || '')
+  if (own) return own
+  return String(filledThumbs.value[String(props.task?.number || '')] || '')
+})
+</script>
+
+<template>
+  <div class="avh-cand">
+    <div class="avh-cand__head">
+      <Thumb
+        class="avh-cand__poster"
+        variant="tposter"
+        :src="poster"
+        alt="无图"
+        :plugin-id="pluginId"
+      />
+      <div>
+        <div class="avh-cand__no">{{ task.number || '' }}</div>
+        <div class="avh-cand__hint avh-cand__origin">
+          {{ origin }} · 搜到 {{ cands.length }} · 合格 {{ passedCount }}
+        </div>
+      </div>
+      <div class="avh-cand__spacer" />
+      <span v-if="task.auto && task.source === 'sub'" class="avh-cand__hint">
+        订阅为自动下载，但无候选合格
+      </span>
+      <!-- 待确认标记：PT 没中且兜底关着 → 「PT/BT 待确认」；PT 与 BT 都没有 → 「所有源均未找到」 -->
+      <template v-if="pendingMark">
+        <v-chip
+          class="avh-cand__mark"
+          :color="pendingMark.color"
+          variant="tonal"
+          size="small"
+          label
+        >{{ pendingMark.text }}</v-chip>
+        <span class="avh-cand__hint">{{ pendingMark.hint }}</span>
+      </template>
+      <!-- 「📌 订阅该影片」：只在"这张卡片没得挑"时由任务页传 ready/done 才画。
+           类名别用 `avh-cand__sub` —— 那是种子原名行的既有类名（行样式已占用）。 -->
+      <v-btn
+        v-if="subscribeState !== 'hidden'"
+        class="avh-cand__subscribe"
+        variant="outlined"
+        size="small"
+        :disabled="subscribeState === 'done'"
+        :loading="subscribing"
+        title="等这部片有资源时自动下载（订阅检查会盯它）"
+        @click="onSubscribe"
+      >{{ subscribeState === 'done' ? '已订阅' : '📌 订阅该影片' }}</v-btn>
+      <!-- 老 `data-cancel` 那颗 .danger 按钮：只有任务页传 cancelable 才画 -->
+      <v-btn
+        v-if="cancelable"
+        class="avh-cand__cancel"
+        variant="outlined"
+        size="small"
+        color="error"
+        :loading="canceling"
+        title="不再等这部片：从待确认里移除（想找回就重新搜一次）"
+        @click="onCancel"
+      >取消任务</v-btn>
+    </div>
+
+    <table class="avh-cand__table">
+      <!--
+        固定表格布局的显式列宽（`table-layout: fixed` 下只认这里的第一行/col 宽度）。
+        「标记」列留 `auto` 吸收剩余宽度；「操作」列给足 92px（下限 84px）保证
+        「仍要下载」这颗四字按钮 + 左右 8px 内边距放得下、永不被挤出卡片右边界。
+      -->
+      <colgroup>
+        <col class="avh-cand__col-site" />
+        <col class="avh-cand__col-mark" />
+        <col class="avh-cand__col-spec" />
+        <col class="avh-cand__col-size" />
+        <col class="avh-cand__col-seed" />
+        <col class="avh-cand__col-score" />
+        <col class="avh-cand__col-act" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th>站点</th>
+          <th>标记</th>
+          <th>规格</th>
+          <th>大小</th>
+          <th>做种</th>
+          <th>匹配分</th>
+          <th class="avh-cand__act">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template v-for="row in rows" :key="row.key">
+          <!-- 行内没有用元素包一层（两个分支都是 <tr>），保证 tbody 里只有表格行 -->
+          <tr v-if="row.kind === 'btnote'">
+            <td colspan="7" class="avh-cand__hint avh-cand__btnote">
+              — PT 没有合格候选，以下为 BT 磁力兜底 —
+            </td>
+          </tr>
+
+          <template v-else>
+            <tr :class="rowClass(row.cand)">
+              <td>
+                <span v-if="row.cand.src === 'BT'" class="avh-tag">BT</span>
+                {{ row.cand.site || '' }}
+              </td>
+              <!-- 「标记」：只画存在的标签，顺序 中字 → 破解 → 免费 → 优先站；全无则弱化 — -->
+              <td class="avh-cand__marks">
+                <template v-if="marks(row.cand).length">
+                  <span
+                    v-for="mark in marks(row.cand)"
+                    :key="mark.text"
+                    class="avh-tag"
+                    :class="mark.cls"
+                  >{{ mark.text }}</span>
+                </template>
+                <span v-else class="avh-cand__hint">—</span>
+              </td>
+              <!-- 「规格」不再是信息大户：保留原文，`title` 兜全文，视觉弱化 + 省略号截断 -->
+              <td class="avh-cand__spec" :title="row.cand.spec || ''">{{ row.cand.spec || '' }}</td>
+              <td>{{ row.cand.size || '' }}</td>
+              <td>{{ seedersText(row.cand) }}</td>
+              <td :title="row.cand.breakdown || ''">
+                <span
+                  class="avh-score"
+                  :class="`avh-score--${scoreLevel(row.cand.score, isPass(row.cand))}`"
+                >{{ scoreText(row.cand) }}</span>
+              </td>
+              <td class="avh-cand__act">
+                <!-- 「原帖」：打开发布页看发布者/简介/截图（0.6.3 加，用户要求）。
+                     没有绝对地址（BT 兜底、站点没配域名）就不画，别给一个点了 404 的链接。 -->
+                <a
+                  v-if="postUrl(row.cand)"
+                  class="avh-cand__post"
+                  :href="postUrl(row.cand)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="打开发布页：发布者、简介、截图等"
+                >原帖</a>
+                <v-btn
+                  v-if="isPass(row.cand)"
+                  class="avh-cand__dl"
+                  variant="outlined"
+                  size="small"
+                  :loading="!!pending[siteKey(row.cand)]"
+                  @click="onDownload(row.cand)"
+                >下载</v-btn>
+                <v-btn
+                  v-else
+                  class="avh-cand__dl"
+                  variant="outlined"
+                  size="small"
+                  :title="row.cand.breakdown || ''"
+                  :loading="!!pending[siteKey(row.cand)]"
+                  @click="onDownload(row.cand)"
+                >仍要下载</v-btn>
+              </td>
+            </tr>
+            <tr v-if="subText(row.cand)" :class="['avh-cand__sub', ...rowClass(row.cand)]">
+              <td colspan="7">
+                <div class="avh-cand__meta">
+                  <span class="avh-cand__ttl" :title="metaTip(row.cand)">{{ subText(row.cand) }}</span>
+                  <span v-if="dateText(row.cand)" class="avh-cand__date">{{
+                    dateText(row.cand)
+                  }}</span>
+                </div>
+              </td>
+            </tr>
+          </template>
+        </template>
+
+        <tr v-if="!cands.length">
+          <td colspan="7" class="avh-cand__hint avh-cand__empty">
+            <span>没有搜到任何候选</span>
+            <!--
+              「转到订阅并自动搜索」（0.9.1，2026-10-27 用户反馈第 1 条）：
+              「点击下载未搜索到资源时，待确认任务栏中缺少『转到订阅并自动搜索』的功能入口」。
+              只在**一条候选都没有**时出现在这格空行里（有候选时那行是「没得挑」，卡片头的
+              「📌 订阅该影片」已经覆盖）；`subscribeState` 为 `hidden` 时（站点搜索页不传）
+              照旧不画 —— 那一页没有「待确认」概念。
+            -->
+            <v-btn
+              v-if="subscribeState !== 'hidden'"
+              class="avh-cand__subscribe avh-cand__subscribe--empty"
+              variant="tonal"
+              color="primary"
+              size="small"
+              :disabled="subscribeState === 'done' || !taskId"
+              :loading="subscribing"
+              :title="subscribeState === 'done'
+                ? '这个番号已经订阅过了，订阅检查会继续盯它'
+                : '建一条番号订阅，下一次订阅检查自动搜它，搜到合格资源按规则自动下载'"
+              @click="onSubscribe"
+            >{{ subscribeState === 'done' ? '✓ 已订阅该影片' : '📌 转到订阅并自动搜索' }}</v-btn>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</template>
+
+<style scoped>
+/* 对齐老 `.q`（调用方内联 `padding:0;overflow:hidden`） */
+.avh-cand {
+  overflow: hidden;
+  margin-bottom: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 10px;
+  background: rgb(var(--v-theme-surface));
+}
+
+.avh-cand__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+}
+
+/* `.tposter`：48×64 小封面 */
+.avh-cand__poster {
+  width: 48px;
+  height: 64px;
+  flex: none;
+  border-radius: 6px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+}
+
+.avh-cand__no {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.avh-cand__hint {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.avh-cand__origin {
+  margin-top: 3px;
+}
+
+.avh-cand__spacer {
+  flex: 1;
+}
+
+/*
+ * `table-layout: fixed`：列宽只认 `<colgroup>`（表格第一条 col / 首行 th），
+ * 长内容（规格串、站点名、种子原名）不再参与列宽计算，所以表格宽度**严格等于容器宽度**，
+ * 卡片 `.avh-cand{overflow:hidden}` 不会再裁掉右半张表——这是本次要修的真实缺陷。
+ * 代价：所有单元格必须自己 `overflow:hidden` + 省略号，否则内容会溢到相邻列上。
+ */
+.avh-cand__table {
+  table-layout: fixed;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+/* 列宽：**七列全部给显式宽度**，不留"弹性列"。
+   `table-layout: fixed` 下，表格宽度（100%）大于各列宽度之和时，多出来的空间由浏览器
+   **按列宽比例摊到每一列上**（CSS 2.1 §17.5.2.1，Chrome/Firefox 实测一致）。
+   所以宽屏下七列会均衡变宽（老实现那种"铺满一整行"的观感），而列宽之比仍由下面这组
+   基准值决定；窄屏时反向等比收缩，且因为布局是 fixed，**永远不会把「操作」列挤出卡片**。
+   （曾经把「标记」列写成 `auto`：宽屏下它一个人吃掉 632px，中间空出一大片，
+   改为全列显式后同一行里最宽的一列是 287px。） */
+.avh-cand__col-site {
+  width: 96px;
+}
+
+.avh-cand__col-mark {
+  width: 180px;
+}
+
+.avh-cand__col-spec {
+  width: 120px;
+}
+
+.avh-cand__col-size {
+  width: 88px;
+}
+
+.avh-cand__col-seed {
+  width: 72px;
+}
+
+.avh-cand__col-score {
+  width: 80px;
+}
+
+.avh-cand__col-act {
+  width: 156px;
+}
+
+/* 单元格截断：fixed 布局下不给省略号就会溢到邻列 */
+.avh-cand__table th,
+.avh-cand__table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.avh-cand__table th {
+  padding: 8px;
+  text-align: left;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+}
+
+.avh-cand__table td {
+  /* 定高（约一行文字 + 上下 9px）配合上面的 overflow:hidden，给行高一个上限，
+     内容按单行省略号处理而不是把行撑高 */
+  height: 38px;
+  padding: 9px 8px;
+  vertical-align: middle;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+
+/* 「操作」列：右对齐 + 按钮不换行，保证按钮完整贴右边界显示 */
+.avh-cand__table th.avh-cand__act,
+.avh-cand__table td.avh-cand__act {
+  text-align: right;
+}
+
+.avh-cand__table td.avh-cand__act {
+  white-space: nowrap;
+}
+
+/* 「标记」列：标签排列不换行（宽度靠 auto 列吸收，标签少也不会撑宽表格） */
+.avh-cand__marks {
+  white-space: nowrap;
+}
+
+/* 「规格」列：信息密度低，视觉弱化一档，长串走省略号（全文看 `title`） */
+.avh-cand__spec {
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+/* 行语义：best 绿底、dead 淡化、bt 深一档（老 `tr.best/tr.dead/tr.bt`） */
+.avh-cand__table tr.best td {
+  background: rgba(var(--v-theme-success), 0.14);
+}
+
+.avh-cand__table tr.dead td {
+  opacity: 0.42;
+}
+
+.avh-cand__table tr.bt td {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+}
+
+.avh-cand__table tr.has-sub td {
+  border-bottom: 0;
+}
+
+.avh-cand__sub td {
+  /* 种子原名/副标题整行横跨 7 列：左右内边距与数据单元格统一取 8px（本次从 10px 收紧） */
+  padding: 0 8px 9px;
+}
+
+/* 副行布局（0.6.3 起是「副标题 + 发布时间」两段，不再是单独一行种子原名）：
+   副标题吃满剩余宽度、单行省略号；日期固定宽度贴右，不跟着省略号一起被截掉。 */
+.avh-cand__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.avh-cand__ttl {
+  flex: 1 1 auto;
+  /* `min-width: 0` 不能省：flex 子项默认 `min-width: auto`，长串会把日期挤出容器 */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.avh-cand__date {
+  flex: none;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(var(--v-theme-on-surface), 0.38);
+}
+
+/* 「原帖」：文字链接，比按钮弱一档（它只是去看一眼，不是动作） */
+.avh-cand__post {
+  margin-right: 10px;
+  font-size: 12px;
+  color: rgb(var(--v-theme-primary));
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.avh-cand__post:hover {
+  text-decoration: underline;
+}
+
+.avh-cand__btnote {
+  padding: 6px 10px;
+}
+
+.avh-cand__empty {
+  padding: 10px;
+}
+
+/* 空行里的「转到订阅并自动搜索」：文字与按钮同一行，窄屏自然折行 */
+.avh-cand__subscribe--empty {
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+/* `.tag` 系列（老 `app.css` 同名规则；底色走主题语义色） */
+.avh-tag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 6px;
+  font-size: 10.5px;
+  border-radius: 4px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.16);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.avh-tag--on {
+  border-color: rgba(var(--v-theme-success), 0.45);
+  background: rgba(var(--v-theme-success), 0.18);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.avh-tag--uc {
+  border-color: rgba(var(--v-theme-secondary), 0.5);
+  background: rgba(var(--v-theme-secondary), 0.2);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.avh-tag--free {
+  border-color: rgba(var(--v-theme-warning), 0.5);
+  background: rgba(var(--v-theme-warning), 0.18);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.avh-tag--pref {
+  border-color: rgba(var(--v-theme-primary), 0.5);
+  background: rgba(var(--v-theme-primary), 0.22);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+/* `.score` 档位色（hi=成功、mid=警告、lo=中性） */
+.avh-score {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.avh-score--hi {
+  color: rgb(var(--v-theme-success));
+}
+
+.avh-score--mid {
+  color: rgb(var(--v-theme-warning));
+}
+
+.avh-score--lo {
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.avh-cand__dl {
+  white-space: nowrap;
+}
+</style>
