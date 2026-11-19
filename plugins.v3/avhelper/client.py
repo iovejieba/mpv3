@@ -16,7 +16,7 @@ import json
 import re
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.sdk.logging import logger
 
@@ -218,3 +218,64 @@ class JavdbClient:
         """磁力链接列表。"""
         args = ["magnets", number] + (["--cnsub"] if cnsub else [])
         return self._run(f"magnets:{number}:{cnsub}", args)
+
+    # ---------- 登录态（面板账密代登，2026-11-20） ----------
+    #
+    # JavDB 服务端 11 月中旬收紧认证后，rankings/search 需要有效账号 token
+    # （CASE-20261120-01）。登录态由 CLI 自管（~/.javdb-cli/auth.json），插件代跑
+    # `auth login -u -p` 把账密交给它——**凭据绝不进日志**：命令展示串里账密打码，
+    # 失败只透 stderr 摘要；不走 _run 的失败冷却（这是用户点按钮的主动行为，
+    # 失败要当场返回界面，不该进 1 小时冷却把「改完账密再点」堵住）。
+
+    def auth_login(self, username: str, password: str) -> Tuple[bool, str]:
+        """面板代登：`auth login -u <user> -p <pass>`（非交互，上游文档确认支持）。
+
+        :return: (是否成功, 给界面看的文案)
+        """
+        username = str(username or "").strip()
+        password = str(password or "")
+        if not username or not password:
+            return False, "账号或密码为空"
+        cmd = [self.bin_path] + (["--proxy", self.proxy] if self.proxy else []) \
+            + ["auth", "login", "-u", username, "-p", password]
+        started = time.time()
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=60,
+                                  stdin=subprocess.DEVNULL)
+        except FileNotFoundError:
+            return False, f"javdb 二进制不存在：{self.bin_path}"
+        except subprocess.TimeoutExpired:
+            return False, "auth login 超时 60s（网络不通 / 代理不可达 / 站点无响应）"
+        except Exception as error:                                        # noqa: BLE001
+            return False, f"调用异常 {type(error).__name__}：{error}"
+        if proc.returncode != 0:
+            tail = _tail(proc.stderr or proc.stdout)
+            return False, f"登录失败（退出码 {proc.returncode}）：{tail}"
+        _LAST_ERROR.pop("auth:login", None)
+        return True, f"登录成功（{time.time() - started:.1f}s）"
+
+    def auth_check(self) -> Tuple[Optional[Dict[str, Any]], str]:
+        """登录态检查：`auth check --json`（不打印 token）。
+
+        :return: (JSON 或 None, 失败说明)。JSON 结构以实测为准（上游未文档化），
+        界面只依赖退出码与失败文案，不要假设字段名。
+        """
+        cmd = [self.bin_path] + (["--proxy", self.proxy] if self.proxy else []) \
+            + ["auth", "check", "--json"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=30,
+                                  stdin=subprocess.DEVNULL)
+        except FileNotFoundError:
+            return None, f"javdb 二进制不存在：{self.bin_path}"
+        except subprocess.TimeoutExpired:
+            return None, "auth check 超时 30s"
+        except Exception as error:                                        # noqa: BLE001
+            return None, f"调用异常 {type(error).__name__}：{error}"
+        if proc.returncode != 0:
+            tail = _tail(proc.stderr or proc.stdout)
+            return None, f"登录态无效（退出码 {proc.returncode}）：{tail}" \
+                if tail else f"登录态无效（退出码 {proc.returncode}）"
+        try:
+            return json.loads(proc.stdout.decode("utf-8", "replace")), ""
+        except ValueError:
+            return None, "auth check 返回不是 JSON"

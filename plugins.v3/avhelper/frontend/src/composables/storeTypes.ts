@@ -103,6 +103,9 @@ export interface RuleValue {
   /** ---- 破解关键字词表（FEAT-20261120-01，与后端 scoring 同键名）---- */
   crackKeywords?: string[]
   requireCrackKeyword?: boolean
+  /** ---- JavDB 登录账密（面板代登）---- */
+  javdbUser?: string
+  javdbPass?: string
   /** ---- LTX 库（2026-11-20 新源；与后端 `ltx_conf()` 同键名，都住在 global_rule kv）---- */
   ltxEnabled?: boolean
   /** 库地址；留空 = 官方 ltxlib.dpdns.org。 */
@@ -265,6 +268,9 @@ export const RULE_FALLBACK: RuleValue = {
   // 破解关键字词表默认（FEAT-20261120-01；后端 tasks.DEFAULT_RULE 同口径）
   crackKeywords: [],
   requireCrackKeyword: false,
+  // JavDB 登录账密默认
+  javdbUser: '',
+  javdbPass: '',
   // LTX 库默认（与后端 `ltx_conf()` 回落值同口径；sameRule 按这份的键集合做脏比较）
   ltxEnabled: true,
   ltxSite: '',

@@ -31,6 +31,9 @@ export interface RuleState {
   crackKeywords?: string[]
   /** 硬门槛：词表非空且开着时，未命中直接淘汰；默认关。 */
   requireCrackKeyword?: boolean
+  /** ---- JavDB 登录（2026-11-20：面板账密代登，明文存 rule kv，界面 password 框）---- */
+  javdbUser?: string
+  javdbPass?: string
   /** ---- LTX 库（2026-11-20 新源；ltx* 键与「下载规则」同住 rule kv，后端 `ltx_conf()` 读）---- */
   /** 总开关，缺键 = 开（`ltx_conf()` 回落 true）。 */
   ltxEnabled?: boolean
@@ -130,6 +133,9 @@ export const RULE_FALLBACK: RuleState = {
   // 破解关键字词表（FEAT-20261120-01）：sameRule 按这份的键集合做脏比较。
   crackKeywords: [],
   requireCrackKeyword: false,
+  // JavDB 登录账密（面板代登用；明文与 Emby token 同级，界面 password 框 + 注明）
+  javdbUser: '',
+  javdbPass: '',
   // LTX 库（2026-11-20）：sameRule 按**这份的键集合**做脏比较，漏了 ltx* 键
   // 就永远不算脏 —— 与 toRuleState 的回落值一字不差。
   ltxEnabled: true,
@@ -226,6 +232,8 @@ export function toRuleState(raw: unknown): RuleState {
           list.findIndex(item => item.toLowerCase() === word.toLowerCase()) === index)
       : [],
     requireCrackKeyword: bool(src.requireCrackKeyword, false),
+    javdbUser: str(src.javdbUser, ''),
+    javdbPass: str(src.javdbPass, ''),
   }
 }
 

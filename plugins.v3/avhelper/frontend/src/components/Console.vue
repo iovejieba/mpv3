@@ -1346,9 +1346,11 @@ onBeforeUnmount(() => {
               v-if="settingsSection === 'general'"
               :config="hostConfig"
               :enabled-known="enabledKnown"
+              :rule="ruleView"
               :api="currentApi()"
               :toast="injectedToast"
               @patch="(patch: any) => Object.assign(hostConfig, patch)"
+              @patch-rule="patchRule"
             />
 
             <SitesPanel

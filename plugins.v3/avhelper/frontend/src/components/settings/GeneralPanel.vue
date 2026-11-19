@@ -6,9 +6,9 @@
  * `enabled` / `proxy` / `javdb_bin` / `data_root` 只能在设置台里改 —— 这一栏是它们唯一的入口。
  * 数据归属：宿主配置，点「保存修改」时走 `emit('save', config)`。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { hostToast, unwrap, type PluginApi } from '../../composables/usePluginApi'
-import type { HostConfigDraft } from '../../composables/settingsModel'
+import type { HostConfigDraft, RuleState } from '../../composables/settingsModel'
 
 const props = defineProps<{
   config: HostConfigDraft
@@ -16,12 +16,20 @@ const props = defineProps<{
   /** 宿主请求器（壳已补插件 id）：javdb-cli 版本检测/升级用它；拿不到就整段隐藏。 */
   api?: PluginApi | null
   toast?: unknown
+  /** 规则草稿（JavDB 登录账密的回显与落库都走 rule kv）。 */
+  rule?: RuleState | null
 }>()
 
 const emit = defineEmits<{
   /** 打补丁到宿主配置草稿（只传改动的字段）。 */
   (event: 'patch', patch: Partial<HostConfigDraft>): void
+  /** 打补丁到规则草稿（JavDB 登录账密落 rule kv 用）。 */
+  (event: 'patch-rule', patch: Record<string, unknown>): void
 }>()
+
+function patchRule(key: string, value: unknown): void {
+  emit('patch-rule', { [key]: value })
+}
 
 function patch<K extends keyof HostConfigDraft>(key: K, value: HostConfigDraft[K]): void {
   emit('patch', { [key]: value } as Partial<HostConfigDraft>)
@@ -38,6 +46,9 @@ interface JavdbVersionInfo {
   checkedAt?: string
   managed?: boolean
   ready?: boolean
+  /** 登录态（后端 auth check 的退出码口径；结构以实测为准，界面只依赖 ok/message）。 */
+  auth?: { ok?: boolean; message?: string }
+  hasCredentials?: boolean
 }
 
 const versionInfo = ref<JavdbVersionInfo | null>(null)
@@ -119,6 +130,51 @@ async function upgrade(): Promise<void> {
 onMounted(() => {
   if (props.api) loadVersion(false)
 })
+
+// ------------------------------------------------ JavDB 登录（面板账密代登）
+
+/** 账密输入的暂存值（回显 rule 草稿；点「登录」直接用当前输入，不等「保存修改」）。 */
+const authUser = ref('')
+const authPass = ref('')
+const authPrefilled = ref(false)
+const loggingIn = ref(false)
+
+/** rule 草稿异步到位后回填一次（用户改过输入就不覆盖）。 */
+watch(() => props.rule, (rule) => {
+  if (!rule || authPrefilled.value) return
+  authUser.value = String(rule.javdbUser || '')
+  authPass.value = String(rule.javdbPass || '')
+  authPrefilled.value = true
+}, { immediate: true, deep: false })
+
+const authOk = computed(() => versionInfo.value?.auth?.ok === true)
+const authMessage = computed(() => String(versionInfo.value?.auth?.message || ''))
+
+async function login(): Promise<void> {
+  const username = authUser.value.trim()
+  const password = authPass.value
+  if (!username || !password) {
+    t.error('账号或密码为空')
+    return
+  }
+  loggingIn.value = true
+  try {
+    const payload = await postJson('/javdb/login', { username, password })
+    if (payload?.success) {
+      t.success(String(payload.message || '登录成功'))
+      // 账密落 rule 草稿（点顶条「保存修改」后进 kv，token 过期时可一键重登）
+      patchRule('javdbUser', username)
+      patchRule('javdbPass', password)
+    } else {
+      t.error(String(payload.message || '登录失败'))
+    }
+    loadVersion(true)
+  } catch (error) {
+    t.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    loggingIn.value = false
+  }
+}
 </script>
 
 <template>
@@ -232,6 +288,48 @@ onMounted(() => {
       </p>
       <p class="text-caption text-medium-emphasis">
         版本低于插件下限（{{ versionInfo?.floor || '' }}）时启动会自动升级，无需手动操作。
+      </p>
+
+      <!-- JavDB 登录：榜单/搜索需要有效账号 token（2026-11 服务端收紧），账密代登收进面板 -->
+      <v-divider class="mb-4" />
+      <div class="d-flex align-center mb-1">
+        <div class="text-caption text-medium-emphasis">JavDB 登录</div>
+      </div>
+      <p class="text-caption text-medium-emphasis mb-2">
+        <template v-if="authOk">✓ 登录态有效。榜单与搜索依赖它；token 过期时在这里一键重登。</template>
+        <template v-else>
+          榜单/搜索需要有效的 JavDB 账号 token{{ authMessage ? `（当前：${authMessage}）` : '' }}——
+          填入账密点「登录」即可，无需进容器敲命令。
+        </template>
+      </p>
+      <div class="d-flex align-center mb-2">
+        <v-text-field
+          v-model="authUser"
+          label="JavDB 账号"
+          density="comfortable"
+          variant="outlined"
+          hide-details
+          class="mr-2"
+        />
+        <v-text-field
+          v-model="authPass"
+          label="密码"
+          type="password"
+          density="comfortable"
+          variant="outlined"
+          hide-details
+          class="mr-2"
+        />
+        <v-btn
+          color="primary"
+          variant="outlined"
+          :loading="loggingIn"
+          @click="login"
+        >登录</v-btn>
+      </div>
+      <p class="text-caption text-medium-emphasis">
+        账密以明文存在插件配置里（与 Emby token 同级，仅内网使用时建议接受）；登录后
+        token 由 javdb-cli 自己保管，插件日志永不回显账密。
       </p>
     </v-card-text>
   </v-card>

@@ -1030,6 +1030,9 @@ class AVHelper(_PluginBase):
             {"path": "/javdb/upgrade", "endpoint": self.api_javdb_upgrade, "methods": ["POST"],
              "auth": "bear", "summary": "升级 javdb-cli",
              "description": "POST {version?} → 下载安装指定版本（默认推荐版本），仅用户点击时发生"},
+            {"path": "/javdb/login", "endpoint": self.api_javdb_login, "methods": ["POST"],
+             "auth": "bear", "summary": "JavDB 账密代登",
+             "description": "POST {username?, password?} → 代跑 auth login（缺参用已存账密）"},
             {"path": "/ltx/status", "endpoint": self.api_ltx_status, "methods": ["GET"],
              "auth": "bear", "summary": "LTX 库状态",
              "description": "本地快照统计 + 最近一次重爬结论 + 当前设置（不含密钥）"},
@@ -1538,6 +1541,7 @@ class AVHelper(_PluginBase):
             if latest:
                 self._javdb_latest = {"version": latest, "at": time.time()}
                 checked_at = self._javdb_latest["at"]
+        auth = await asyncio.to_thread(self._javdb_auth_status)
         return {
             "success": True,
             "installed": installed,
@@ -1549,6 +1553,8 @@ class AVHelper(_PluginBase):
             if checked_at else "",
             "managed": paths.is_managed_javdb(),
             "ready": paths.javdb_ready(),
+            "auth": auth,
+            "hasCredentials": bool(self.javdb_auth_conf()["javdbUser"]),
         }
 
     async def api_javdb_upgrade(self, request: Request) -> Dict[str, Any]:
@@ -1570,6 +1576,62 @@ class AVHelper(_PluginBase):
         self._javdb_latest = {}
         return {"success": True, "version": version,
                 "message": f"已升级到 {version}，立即生效（无需重载）"}
+
+    def javdb_auth_conf(self) -> Dict[str, str]:
+        """JavDB 登录账密（存 `global_rule` kv；面板「常规」栏读写，`POST /rule` 落库）。
+
+        明文存储与 Emby token 同级（本插件只在内网运行，0.9.4 的口径）；界面用
+        password 输入框、日志与界面永不回显——`client.auth_login()` 的命令展示串
+        里账密打码。
+        """
+        rule = self.global_rule() or {}
+        return {
+            "javdbUser": str(rule.get("javdbUser") or "").strip(),
+            "javdbPass": str(rule.get("javdbPass") or ""),
+        }
+
+    def _javdb_auth_status(self) -> Dict[str, Any]:
+        """登录态快照（面板显示用）：`auth check` 的退出码 + 失败文案。"""
+        ok, raw, message = True, None, ""
+        try:
+            raw, message = self.cli().auth_check()
+            ok = raw is not None
+        except Exception as error:                                        # noqa: BLE001
+            ok, message = False, f"{type(error).__name__}: {error}"
+        status: Dict[str, Any] = {"ok": ok, "message": message}
+        if isinstance(raw, dict):
+            # 结构以实测为准：原样挑几个常见字段透出，界面不要硬依赖
+            for key in ("expired", "username", "user_id", "expiresAt"):
+                if key in raw:
+                    status[key] = raw[key]
+        return status
+
+    async def api_javdb_login(self, request: Request) -> Dict[str, Any]:
+        """面板账密代登：POST {username?, password?} → 代跑 `javdb auth login`。
+
+        账密给了就**先落 kv 再登录**（token 过期后面板可一键重登）；没给就用已存
+        的。这是 0.9.6-beta.1 把最后一条手工命令（docker exec auth login）收进
+        面板的收尾——客户全程零命令行。登录**不走失败冷却**（用户行为，当场反馈）。
+        """
+        payload = await self._json_body(request)
+        username = str(payload.get("username") or "").strip()
+        password = str(payload.get("password") or "")
+        if username and password:
+            # 落 kv（登录成功与否都存：账密本身没错，错的是站点侧）
+            rule = {**self.global_rule(),
+                    "javdbUser": username, "javdbPass": password}
+            await asyncio.to_thread(self.store.kv_set, GLOBAL_RULE_KEY, rule)
+        else:
+            conf = self.javdb_auth_conf()
+            username, password = conf["javdbUser"], conf["javdbPass"]
+        if not username or not password:
+            return {"success": False,
+                    "message": "缺少账号或密码（面板里填写后再点登录）"}
+        ok, message = await asyncio.to_thread(
+            self.cli().auth_login, username, password)
+        logger.info(f"AVHelper javdb 登录{'成功' if ok else '失败'}：{message}")
+        return {"success": ok, "message": message,
+                "auth": self._javdb_auth_status()}
 
     def magnets_cached(self, number: str) -> Optional[List[Dict[str, Any]]]:
         """磁力列表：优先读 7 天文件缓存（与详情页共用同一个 key），未命中才起子进程。
