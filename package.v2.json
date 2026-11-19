@@ -161,8 +161,7 @@
       "v1.0.0": "首个版本：劫持 refresh_userdata 接管 exoticaz.to 用户面板刷新；附 H&R 账本解析（做种窗口/倒计时/BP 定价语义见配套交叉验证文档）"
     }
   },
-  {
-  "AVHelper": {
+	"AVHelper": {
     "name": "AV 资源助手",
     "description": "JAV 榜单/演员/详情浏览，番号与演员订阅，PT 选种下载与通知（Vue 联邦界面，需要 MoviePilot ≥ 3.1.0）。仅供学习研究使用，请遵守当地法律法规。",
     "labels": "发现",
