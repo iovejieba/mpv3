@@ -1294,7 +1294,11 @@ class AVHelper(_PluginBase):
         suffixes = rule.get("cleanSuffixes")
         sources = _source_list(rule)
         return {
-            "scrapeMode": pick_choice(rule.get("scrapeMode"), SCRAPE_MODES, "fill"),
+            # 缺省 **off**（与前端 SCRAPE_DEFAULTS.scrapeMode 一字不差）：kv 里没存过 scrapeMode 时，
+            # 前后端必须同判「不启用」——历史上后端回落 "fill" 而前端回落 "off"，结果是界面
+            # 显示「不启用自建刮削层」、后台定时重刮却按 fill 在跑（2026-11-20 用户撞上的
+            # 「明明没开还打翻译网关」就是它）。
+            "scrapeMode": pick_choice(rule.get("scrapeMode"), SCRAPE_MODES, "off"),
             # P1-5：`sources` 是启用源的新真值；两个布尔是 0.7.x 的旧键，**由它派生**（兼容老前端）
             "sources": sources,
             "plotJavtxt": "javtxt" in sources,
@@ -3401,6 +3405,13 @@ class AVHelper(_PluginBase):
         """
         conf = self.scrape_conf()
         opts = dict(conf)
+        # 模式总闸：`off` = 不启用自建刮削层 → 手动刮削/单条路径也不该碰网络源与 LLM。
+        # 调度入口（重刮队列/下载完成即刮）各自挡了一道，但 `/scrape/run` 与 `/scrape/preview`
+        # 的手动路径直达这里 —— 不发这些键，scraper 的 DEFAULT_OPTS（translate=True、
+        # plot_sources=("javtxt",)）会照旧打站点与翻译网关（2026-11-20 用户撞上的第二个坑）。
+        if str(conf.get("scrapeMode") or "").strip().lower() == "off":
+            opts["translate"] = False
+            opts["plot_sources"] = ()
         # 驼峰 → 下划线：开关合成 `plot_sources`（顺序即回落优先级，契约 §4.2）
         opts["plot_sources"] = ("javtxt",) if conf["plotJavtxt"] else ()
         # P1-5：启用源（新真值）与字段级择优 —— 取数图直接读这三个键
