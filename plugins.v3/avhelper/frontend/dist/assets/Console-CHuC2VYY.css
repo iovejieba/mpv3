@@ -48,17 +48,17 @@
   gap: 12px 16px;
 }
 
-.avh-panel[data-v-b27f91a6] {
+.avh-panel[data-v-f5aedc59] {
   margin-bottom: 12px;
 }
 
 /* 与 `RulePanel` 同一套「自动铺列」网格（窄屏自然折成一列） */
-.avh-grid[data-v-b27f91a6] {
+.avh-grid[data-v-f5aedc59] {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px 16px;
 }
-.avh-row[data-v-b27f91a6] {
+.avh-row[data-v-f5aedc59] {
   display: flex;
   align-items: center;
   gap: 10px;

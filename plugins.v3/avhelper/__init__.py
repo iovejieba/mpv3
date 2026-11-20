@@ -1302,6 +1302,14 @@ class AVHelper(_PluginBase):
             # P1-5：`sources` 是启用源的新真值；两个布尔是 0.7.x 的旧键，**由它派生**（兼容老前端）
             "sources": sources,
             "plotJavtxt": "javtxt" in sources,
+            # 翻译独立开关（2026-11-20：此前翻译没有 UI 开关，scraper 默认 True，
+            # 「没配 key 的网关」每次重刮都被撞一遍——现在显式给一个，默认关。
+            # 关 = scrape_opts 发 translate=False，翻译链整体短路、全部保留原文。）
+            "translateEnabled": pick_bool(rule.get("translateEnabled"), False),
+            # 插件级 LLM 覆盖（可选）：填了走插件自己的网关；留空回落宿主 LLM_* 配置。
+            # key 明文存 rule kv（与 Emby token 同级口径），日志/界面永不回显。
+            "llmBaseUrl": str(rule.get("llmBaseUrl") or "").strip(),
+            "llmApiKey": str(rule.get("llmApiKey") or "").strip(),
             "translateModel": str(rule.get("translateModel") or "").strip() or "hy3",
             "translateModelFallback": (str(rule.get("translateModelFallback") or "").strip()
                                        or "deepseek-v4.1-flash"),
@@ -3412,6 +3420,13 @@ class AVHelper(_PluginBase):
         if str(conf.get("scrapeMode") or "").strip().lower() == "off":
             opts["translate"] = False
             opts["plot_sources"] = ()
+        # 翻译独立开关（优先级：模式总闸 > 翻译开关 > scraper 默认 True）
+        opts["translate"] = bool(conf.get("translateEnabled")) and bool(
+            opts.get("translate", True))
+        # 插件级 LLM 覆盖：填了就走插件自己的网关（translator 的 override 优先级最高）
+        if conf.get("llmBaseUrl") or conf.get("llmApiKey"):
+            opts["llm_override"] = {"base_url": conf.get("llmBaseUrl") or None,
+                                    "api_key": conf.get("llmApiKey") or None}
         # 驼峰 → 下划线：开关合成 `plot_sources`（顺序即回落优先级，契约 §4.2）
         opts["plot_sources"] = ("javtxt",) if conf["plotJavtxt"] else ()
         # P1-5：启用源（新真值）与字段级择优 —— 取数图直接读这三个键

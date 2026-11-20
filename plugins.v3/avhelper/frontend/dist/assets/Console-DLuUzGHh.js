@@ -393,6 +393,9 @@ const ACTOR_SECTIONS = ["actor"];
 const NOTIFY_SECTIONS = ["notify"];
 const SCRAPE_DEFAULTS = {
   scrapeMode: "off",
+  translateEnabled: false,
+  llmBaseUrl: "",
+  llmApiKey: "",
   plotJavtxt: true,
   translateModel: "hy3",
   translateModelFallback: "deepseek-v4.1-flash",
@@ -464,6 +467,9 @@ function toScrapeSettings(raw) {
   return {
     scrapeMode: pick(src.scrapeMode, MODES, SCRAPE_DEFAULTS.scrapeMode),
     plotJavtxt: boolOf(src.plotJavtxt, SCRAPE_DEFAULTS.plotJavtxt),
+    translateEnabled: boolOf(src.translateEnabled, SCRAPE_DEFAULTS.translateEnabled),
+    llmBaseUrl: textOf$1(src.llmBaseUrl, SCRAPE_DEFAULTS.llmBaseUrl),
+    llmApiKey: textOf$1(src.llmApiKey, SCRAPE_DEFAULTS.llmApiKey),
     translateModel: textOf$1(src.translateModel, SCRAPE_DEFAULTS.translateModel),
     translateModelFallback: textOf$1(src.translateModelFallback, SCRAPE_DEFAULTS.translateModelFallback),
     trailerMode: pick(src.trailerMode, TRAILERS, SCRAPE_DEFAULTS.trailerMode),
@@ -850,7 +856,7 @@ const _hoisted_4$p = {
   key: 2,
   class: "text-body-2 mb-1"
 };
-const _hoisted_5$n = { class: "text-caption text-medium-emphasis" };
+const _hoisted_5$o = { class: "text-caption text-medium-emphasis" };
 const _hoisted_6$m = {
   key: 4,
   class: "text-caption text-medium-emphasis"
@@ -1112,7 +1118,7 @@ const _sfc_main$x = /* @__PURE__ */ _defineComponent$x({
                 versionInfo.value.latest ? (_openBlock$x(), _createElementBlock$w(_Fragment$p, { key: 3 }, [
                   _cache[13] || (_cache[13] = _createTextVNode$q(" · 上游最新 ")),
                   _createElementVNode$u("b", null, _toDisplayString$w(versionInfo.value.latest), 1),
-                  _createElementVNode$u("span", _hoisted_5$n, "（检测于 " + _toDisplayString$w(versionInfo.value.checkedAt || "—") + "）", 1)
+                  _createElementVNode$u("span", _hoisted_5$o, "（检测于 " + _toDisplayString$w(versionInfo.value.checkedAt || "—") + "）", 1)
                 ], 64)) : versionInfo.value.checkReason ? (_openBlock$x(), _createElementBlock$w("span", _hoisted_6$m, " · 上游检测失败：" + _toDisplayString$w(versionInfo.value.checkReason), 1)) : _createCommentVNode$q("", true)
               ])) : _createCommentVNode$q("", true),
               outdated.value && versionInfo.value?.managed ? (_openBlock$x(), _createBlock$r(_component_v_alert, {
@@ -1213,7 +1219,7 @@ const _hoisted_1$u = { class: "avh-row" };
 const _hoisted_2$u = { class: "avh-row-main" };
 const _hoisted_3$r = { class: "avh-scope text-body-1" };
 const _hoisted_4$o = { class: "avh-scope text-body-2" };
-const _hoisted_5$m = { class: "avh-row-actions" };
+const _hoisted_5$n = { class: "avh-row-actions" };
 const _hoisted_6$l = { class: "d-flex align-center mb-2" };
 const _hoisted_7$i = { class: "text-caption text-medium-emphasis" };
 const _hoisted_8$h = { class: "avh-list" };
@@ -1367,7 +1373,7 @@ const _sfc_main$w = /* @__PURE__ */ _defineComponent$w({
                     _cache[8] || (_cache[8] = _createElementVNode$t("div", { class: "text-caption text-medium-emphasis mt-3 mb-1" }, "优先站点（命中即停，顺序有意义）", -1)),
                     _createElementVNode$t("div", _hoisted_4$o, _toDisplayString$v(prefText.value), 1)
                   ]),
-                  _createElementVNode$t("div", _hoisted_5$m, [
+                  _createElementVNode$t("div", _hoisted_5$n, [
                     _createVNode$s(_component_v_btn, {
                       color: "primary",
                       variant: "tonal",
@@ -1690,7 +1696,7 @@ const _hoisted_3$q = {
   class: "text-caption text-medium-emphasis"
 };
 const _hoisted_4$n = { class: "text-caption text-medium-emphasis mb-3" };
-const _hoisted_5$l = { class: "text-caption text-medium-emphasis mb-3" };
+const _hoisted_5$m = { class: "text-caption text-medium-emphasis mb-3" };
 const _hoisted_6$k = { class: "avh-grid mb-2" };
 const {computed: computed$p,ref: ref$u} = await importShared('vue');
 const _sfc_main$v = /* @__PURE__ */ _defineComponent$v({
@@ -1933,7 +1939,7 @@ const _sfc_main$v = /* @__PURE__ */ _defineComponent$v({
                 class: "mb-1",
                 "onUpdate:modelValue": _cache[6] || (_cache[6] = (value) => patch("allow4k", value === true))
               }, null, 8, ["model-value", "disabled"]),
-              _createElementVNode$s("p", _hoisted_5$l, [
+              _createElementVNode$s("p", _hoisted_5$m, [
                 allow4kMatters.value ? (_openBlock$v(), _createElementBlock$u(_Fragment$n, { key: 0 }, [
                   _createTextVNode$o("1080P 没有好种时升级 4K。")
                 ], 64)) : (_openBlock$v(), _createElementBlock$u(_Fragment$n, { key: 1 }, [
@@ -2045,8 +2051,9 @@ const {resolveComponent:_resolveComponent$p,createVNode:_createVNode$q,createTex
 
 const _hoisted_1$s = { class: "text-caption text-medium-emphasis mb-4" };
 const _hoisted_2$s = { class: "avh-grid mb-2" };
-const _hoisted_3$p = { class: "avh-row mb-2" };
-const _hoisted_4$m = { class: "text-caption text-medium-emphasis mb-4" };
+const _hoisted_3$p = { class: "avh-grid mb-2" };
+const _hoisted_4$m = { class: "avh-row mb-2" };
+const _hoisted_5$l = { class: "text-caption text-medium-emphasis mb-4" };
 const {computed: computed$o,ref: ref$t} = await importShared('vue');
 const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
   __name: "ScrapePanel",
@@ -2139,13 +2146,13 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
             ]),
             default: _withCtx$p(() => [
               _createVNode$q(_component_v_card_title, null, {
-                default: _withCtx$p(() => _cache[8] || (_cache[8] = [
+                default: _withCtx$p(() => _cache[11] || (_cache[11] = [
                   _createTextVNode$n("刮削")
                 ])),
                 _: 1
               }),
               _createVNode$q(_component_v_card_subtitle, null, {
-                default: _withCtx$p(() => _cache[9] || (_cache[9] = [
+                default: _withCtx$p(() => _cache[12] || (_cache[12] = [
                   _createTextVNode$n("自建刮削层 · 简介 / 翻译 / 裁切 / 预告片 · 与「下载规则」同一份插件设置（POST /rule）")
                 ])),
                 _: 1
@@ -2155,7 +2162,7 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
           }),
           _createVNode$q(_component_v_card_text, null, {
             default: _withCtx$p(() => [
-              _cache[12] || (_cache[12] = _createElementVNode$r("div", { class: "text-caption text-medium-emphasis mb-1" }, "刮削模式", -1)),
+              _cache[15] || (_cache[15] = _createElementVNode$r("div", { class: "text-caption text-medium-emphasis mb-1" }, "刮削模式", -1)),
               _createVNode$q(_component_v_btn_toggle, {
                 "model-value": props.settings.scrapeMode,
                 mandatory: "",
@@ -2181,7 +2188,7 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
                 _: 1
               }, 8, ["model-value"]),
               _createElementVNode$r("p", _hoisted_1$s, _toDisplayString$t(modeHint.value) + " 具体字段路由由后端按这一档执行；本栏只负责选择与保存。 ", 1),
-              _cache[13] || (_cache[13] = _createElementVNode$r("div", { class: "text-caption text-medium-emphasis mb-1" }, "简介来源", -1)),
+              _cache[16] || (_cache[16] = _createElementVNode$r("div", { class: "text-caption text-medium-emphasis mb-1" }, "简介来源", -1)),
               _createVNode$q(_component_v_switch, {
                 "model-value": props.settings.plotJavtxt,
                 color: "primary",
@@ -2191,12 +2198,44 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
                 class: "mb-1",
                 "onUpdate:modelValue": _cache[1] || (_cache[1] = (value) => patch("plotJavtxt", value === true))
               }, null, 8, ["model-value"]),
-              _cache[14] || (_cache[14] = _createElementVNode$r("p", { class: "text-caption text-medium-emphasis mb-4" }, [
+              _cache[17] || (_cache[17] = _createElementVNode$r("p", { class: "text-caption text-medium-emphasis mb-4" }, [
                 _createTextVNode$n(" javdb 侧不给简介（实测 12/12 "),
                 _createElementVNode$r("code", null, "summary"),
                 _createTextVNode$n(" 为 null），所以简介只能来自 Javtxt； 关掉它这一档等于「只写核心字段」。MetaTube 已于 0.8.1 整体下线，不再有第二个兜底源。 ")
               ], -1)),
+              _createVNode$q(_component_v_switch, {
+                "model-value": props.settings.translateEnabled === true,
+                color: "primary",
+                "hide-details": "",
+                inset: "",
+                label: "启用 LLM 翻译",
+                class: "mb-1",
+                "onUpdate:modelValue": _cache[2] || (_cache[2] = (value) => patch("translateEnabled", value === true))
+              }, null, 8, ["model-value"]),
+              _cache[18] || (_cache[18] = _createElementVNode$r("p", { class: "text-caption text-medium-emphasis mb-3" }, " 把日文标题/简介翻成中文（调 OpenAI 兼容网关）。默认关——关 = 翻译链整体短路， 全部保留原文、不再请求任何网关。模型名在下方配置。 ", -1)),
+              _cache[19] || (_cache[19] = _createElementVNode$r("div", { class: "text-caption text-medium-emphasis mb-1" }, "LLM 网关（可选覆盖）", -1)),
               _createElementVNode$r("div", _hoisted_2$s, [
+                _createVNode$q(_component_v_text_field, {
+                  "model-value": props.settings.llmBaseUrl,
+                  label: "网关地址（留空 = 用 MP 宿主的 LLM_BASE_URL）",
+                  placeholder: "https://…/v1",
+                  variant: "outlined",
+                  density: "comfortable",
+                  "hide-details": "",
+                  "onUpdate:modelValue": _cache[3] || (_cache[3] = (value) => patch("llmBaseUrl", String(value ?? "").trim()))
+                }, null, 8, ["model-value"]),
+                _createVNode$q(_component_v_text_field, {
+                  "model-value": props.settings.llmApiKey,
+                  label: "API Key（留空 = 用宿主的 LLM_API_KEY）",
+                  type: "password",
+                  variant: "outlined",
+                  density: "comfortable",
+                  "hide-details": "",
+                  "onUpdate:modelValue": _cache[4] || (_cache[4] = (value) => patch("llmApiKey", String(value ?? "")))
+                }, null, 8, ["model-value"])
+              ]),
+              _cache[20] || (_cache[20] = _createElementVNode$r("p", { class: "text-caption text-medium-emphasis mb-4" }, " 两项都留空 = 沿用 MP 宿主的 LLM 配置（设置 → 系统）。填了 = 插件自己直连这个网关； key 明文存在插件配置里（仅内网使用时建议接受），日志永不回显。 ", -1)),
+              _createElementVNode$r("div", _hoisted_3$p, [
                 _createVNode$q(_component_v_text_field, {
                   "model-value": props.settings.translateModel,
                   label: "翻译模型",
@@ -2205,7 +2244,7 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
                   variant: "outlined",
                   density: "comfortable",
                   clearable: "",
-                  "onUpdate:modelValue": _cache[2] || (_cache[2] = (value) => patch("translateModel", String(value ?? "").trim() || "hy3"))
+                  "onUpdate:modelValue": _cache[5] || (_cache[5] = (value) => patch("translateModel", String(value ?? "").trim() || "hy3"))
                 }, null, 8, ["model-value"]),
                 _createVNode$q(_component_v_text_field, {
                   "model-value": props.settings.translateModelFallback,
@@ -2215,10 +2254,10 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
                   variant: "outlined",
                   density: "comfortable",
                   clearable: "",
-                  "onUpdate:modelValue": _cache[3] || (_cache[3] = (value) => patch("translateModelFallback", String(value ?? "").trim()))
+                  "onUpdate:modelValue": _cache[6] || (_cache[6] = (value) => patch("translateModelFallback", String(value ?? "").trim()))
                 }, null, 8, ["model-value"])
               ]),
-              _createElementVNode$r("div", _hoisted_3$p, [
+              _createElementVNode$r("div", _hoisted_4$m, [
                 _createVNode$q(_component_v_btn, {
                   variant: "outlined",
                   size: "small",
@@ -2226,12 +2265,12 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
                   loading: checking.value,
                   onClick: runSelfcheck
                 }, {
-                  default: _withCtx$p(() => _cache[10] || (_cache[10] = [
+                  default: _withCtx$p(() => _cache[13] || (_cache[13] = [
                     _createTextVNode$n("模型自检")
                   ])),
                   _: 1
                 }, 8, ["loading"]),
-                _cache[11] || (_cache[11] = _createElementVNode$r("span", { class: "text-caption text-medium-emphasis" }, "POST /scrape/selfcheck（后端转 translator.selfcheck）", -1))
+                _cache[14] || (_cache[14] = _createElementVNode$r("span", { class: "text-caption text-medium-emphasis" }, "POST /scrape/selfcheck（后端转 translator.selfcheck）", -1))
               ]),
               check.value ? (_openBlock$u(), _createBlock$o(_component_v_alert, {
                 key: 0,
@@ -2245,7 +2284,7 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
                 ]),
                 _: 1
               }, 8, ["type"])) : _createCommentVNode$n("", true),
-              _cache[15] || (_cache[15] = _createElementVNode$r("div", { class: "text-caption text-medium-emphasis mb-1" }, "预告片", -1)),
+              _cache[21] || (_cache[21] = _createElementVNode$r("div", { class: "text-caption text-medium-emphasis mb-1" }, "预告片", -1)),
               _createVNode$q(_component_v_btn_toggle, {
                 "model-value": props.settings.trailerMode,
                 mandatory: "",
@@ -2253,7 +2292,7 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
                 variant: "outlined",
                 color: "primary",
                 class: "mb-1",
-                "onUpdate:modelValue": _cache[4] || (_cache[4] = (value) => value && patch("trailerMode", value))
+                "onUpdate:modelValue": _cache[7] || (_cache[7] = (value) => value && patch("trailerMode", value))
               }, {
                 default: _withCtx$p(() => [
                   (_openBlock$u(), _createElementBlock$t(_Fragment$m, null, _renderList$k(TRAILERS, (item) => {
@@ -2270,8 +2309,8 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
                 ]),
                 _: 1
               }, 8, ["model-value"]),
-              _createElementVNode$r("p", _hoisted_4$m, _toDisplayString$t(trailerHint.value) + " 产品口径：写媒体目录（本地文件那档）会让 Emby 立刻扫一遍库，所以这里默认停在「关闭」。 ", 1),
-              _cache[16] || (_cache[16] = _createElementVNode$r("div", { class: "text-caption text-medium-emphasis mb-1" }, "下载完成即刮", -1)),
+              _createElementVNode$r("p", _hoisted_5$l, _toDisplayString$t(trailerHint.value) + " 产品口径：写媒体目录（本地文件那档）会让 Emby 立刻扫一遍库，所以这里默认停在「关闭」。 ", 1),
+              _cache[22] || (_cache[22] = _createElementVNode$r("div", { class: "text-caption text-medium-emphasis mb-1" }, "下载完成即刮", -1)),
               _createVNode$q(_component_v_switch, {
                 "model-value": props.settings.scrapeOnDownload,
                 color: "primary",
@@ -2279,10 +2318,10 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
                 inset: "",
                 label: "下载完成后立即刮削",
                 class: "mb-1",
-                "onUpdate:modelValue": _cache[5] || (_cache[5] = (value) => patch("scrapeOnDownload", value === true))
+                "onUpdate:modelValue": _cache[8] || (_cache[8] = (value) => patch("scrapeOnDownload", value === true))
               }, null, 8, ["model-value"]),
-              _cache[17] || (_cache[17] = _createElementVNode$r("p", { class: "text-caption text-medium-emphasis mb-4" }, " 台账入账那一刻就把这一部片刮一遍，不用等每天 3 次的订阅检查、也不用手动点。 代价：会写 Emby 元数据，每条之间按限流间隔串行（后台线程逐条做，不卡界面）； 「刮削模式」关掉时这一项不生效。 ", -1)),
-              _cache[18] || (_cache[18] = _createElementVNode$r("div", { class: "text-caption text-medium-emphasis mb-1" }, "定时重刮", -1)),
+              _cache[23] || (_cache[23] = _createElementVNode$r("p", { class: "text-caption text-medium-emphasis mb-4" }, " 台账入账那一刻就把这一部片刮一遍，不用等每天 3 次的订阅检查、也不用手动点。 代价：会写 Emby 元数据，每条之间按限流间隔串行（后台线程逐条做，不卡界面）； 「刮削模式」关掉时这一项不生效。 ", -1)),
+              _cache[24] || (_cache[24] = _createElementVNode$r("div", { class: "text-caption text-medium-emphasis mb-1" }, "定时重刮", -1)),
               _createVNode$q(_component_v_switch, {
                 "model-value": props.settings.autoScrapeTier1,
                 color: "primary",
@@ -2290,7 +2329,7 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
                 inset: "",
                 label: "Tier 1：新片与残缺片（指数退避 6h→24h→72h→7d→14d）",
                 class: "mb-1",
-                "onUpdate:modelValue": _cache[6] || (_cache[6] = (value) => patch("autoScrapeTier1", value === true))
+                "onUpdate:modelValue": _cache[9] || (_cache[9] = (value) => patch("autoScrapeTier1", value === true))
               }, null, 8, ["model-value"]),
               _createVNode$q(_component_v_switch, {
                 "model-value": props.settings.autoScrapeTier2,
@@ -2299,9 +2338,9 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
                 inset: "",
                 label: "Tier 2：全库冷数据滚动（每轮取最久未更新的 5 条）",
                 class: "mb-1",
-                "onUpdate:modelValue": _cache[7] || (_cache[7] = (value) => patch("autoScrapeTier2", value === true))
+                "onUpdate:modelValue": _cache[10] || (_cache[10] = (value) => patch("autoScrapeTier2", value === true))
               }, null, 8, ["model-value"]),
-              _cache[19] || (_cache[19] = _createElementVNode$r("p", { class: "text-caption text-medium-emphasis mb-0" }, " 两档默认都关：打开后由后端调度器按退避节奏跑，队列长度在数据台「刮削」栏顶部看。 ", -1))
+              _cache[25] || (_cache[25] = _createElementVNode$r("p", { class: "text-caption text-medium-emphasis mb-0" }, " 两档默认都关：打开后由后端调度器按退避节奏跑，队列长度在数据台「刮削」栏顶部看。 ", -1))
             ]),
             _: 1
           })
@@ -2312,7 +2351,7 @@ const _sfc_main$u = /* @__PURE__ */ _defineComponent$u({
   }
 });
 
-const ScrapePanel = /* @__PURE__ */ _export_sfc(_sfc_main$u, [["__scopeId", "data-v-b27f91a6"]]);
+const ScrapePanel = /* @__PURE__ */ _export_sfc(_sfc_main$u, [["__scopeId", "data-v-f5aedc59"]]);
 
 const {defineComponent:_defineComponent$t} = await importShared('vue');
 

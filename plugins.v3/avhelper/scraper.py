@@ -2191,6 +2191,12 @@ def translate_fields(*, display_number: str, title_jp: str, plot_jp: str,
     item = {"number": display_number, "title_jp": _clean_text(title_jp),
             "plot_jp": _clean_text(plot_jp) or None, "glossary": glossary}
     kwargs: Dict[str, Any] = {"allow_machine": bool(_opt(opts, "allow_machine"))}
+    # 插件级 LLM 覆盖（`opts['llm_override']`，由 scrape_opts 按 `llmBaseUrl/llmApiKey` 组装）：
+    # 传给 translate_batch 的 `conf` —— override 优先级最高，填了就走插件自己的网关，
+    # 不填回落宿主 `LLM_*` 配置（translator._conf_value 的顺序）。
+    override = _opt(opts, "llm_override")
+    if isinstance(override, dict) and (override.get("base_url") or override.get("api_key")):
+        kwargs["conf"] = {k: v for k, v in override.items() if v}
     if store is not None and _accepts(translator.translate_batch, "store"):
         # S4 的 `translate_batch(..., store=…)` 会把结果落进 `translate` 表（二次刮削直接命中缓存，
         # 省一次 LLM 往返）。签名不支持就不传 —— 宁可少一份缓存，也不要 TypeError 把翻译整条打挂。

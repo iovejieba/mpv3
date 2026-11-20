@@ -155,6 +155,48 @@ async function runSelfcheck(): Promise<void> {
         关掉它这一档等于「只写核心字段」。MetaTube 已于 0.8.1 整体下线，不再有第二个兜底源。
       </p>
 
+      <!-- ===== 翻译开关（2026-11-20：此前翻译无 UI 开关，scraper 默认 True 导致「没配 key 也每次撞网关」） ===== -->
+      <v-switch
+        :model-value="props.settings.translateEnabled === true"
+        color="primary"
+        hide-details
+        inset
+        label="启用 LLM 翻译"
+        class="mb-1"
+        @update:model-value="(value: any) => patch('translateEnabled', value === true)"
+      />
+      <p class="text-caption text-medium-emphasis mb-3">
+        把日文标题/简介翻成中文（调 OpenAI 兼容网关）。默认关——关 = 翻译链整体短路，
+        全部保留原文、不再请求任何网关。模型名在下方配置。
+      </p>
+
+      <!-- ===== LLM 网关覆盖（可选） ===== -->
+      <div class="text-caption text-medium-emphasis mb-1">LLM 网关（可选覆盖）</div>
+      <div class="avh-grid mb-2">
+        <v-text-field
+          :model-value="props.settings.llmBaseUrl"
+          label="网关地址（留空 = 用 MP 宿主的 LLM_BASE_URL）"
+          placeholder="https://…/v1"
+          variant="outlined"
+          density="comfortable"
+          hide-details
+          @update:model-value="(value: any) => patch('llmBaseUrl', String(value ?? '').trim())"
+        />
+        <v-text-field
+          :model-value="props.settings.llmApiKey"
+          label="API Key（留空 = 用宿主的 LLM_API_KEY）"
+          type="password"
+          variant="outlined"
+          density="comfortable"
+          hide-details
+          @update:model-value="(value: any) => patch('llmApiKey', String(value ?? ''))"
+        />
+      </div>
+      <p class="text-caption text-medium-emphasis mb-4">
+        两项都留空 = 沿用 MP 宿主的 LLM 配置（设置 → 系统）。填了 = 插件自己直连这个网关；
+        key 明文存在插件配置里（仅内网使用时建议接受），日志永不回显。
+      </p>
+
       <!-- ===== 翻译模型 + 自检 ===== -->
       <div class="avh-grid mb-2">
         <v-text-field

@@ -87,6 +87,11 @@ export interface ScrapeSettings {
   scrapeMode: ScrapeMode
   /** 简介源：Javtxt（中文直出，契约 §4.2）。 */
   plotJavtxt: boolean
+  /** 翻译独立开关（默认关；关 = 翻译链整体短路，全部保留原文）。 */
+  translateEnabled: boolean
+  /** 插件级 LLM 覆盖（可选；留空回落宿主 LLM_* 配置）。 */
+  llmBaseUrl: string
+  llmApiKey: string
   /** 翻译模型（契约 D6：默认 `hy3`，失败降级 `translateModelFallback`）。 */
   translateModel: string
   /** 备用翻译模型（同一网关）。 */
@@ -125,6 +130,9 @@ export interface ScrapeSettings {
 /** 默认值（后端拿不到键时按这一份兜底；面板里的文案与它一一对应）。 */
 export const SCRAPE_DEFAULTS: ScrapeSettings = {
   scrapeMode: 'off',
+  translateEnabled: false,
+  llmBaseUrl: '',
+  llmApiKey: '',
   plotJavtxt: true,
   translateModel: 'hy3',
   translateModelFallback: 'deepseek-v4.1-flash',
@@ -216,6 +224,9 @@ export function toScrapeSettings(raw: unknown): ScrapeSettings {
   return {
     scrapeMode: pick(src.scrapeMode, MODES, SCRAPE_DEFAULTS.scrapeMode),
     plotJavtxt: boolOf(src.plotJavtxt, SCRAPE_DEFAULTS.plotJavtxt),
+    translateEnabled: boolOf(src.translateEnabled, SCRAPE_DEFAULTS.translateEnabled),
+    llmBaseUrl: textOf(src.llmBaseUrl, SCRAPE_DEFAULTS.llmBaseUrl),
+    llmApiKey: textOf(src.llmApiKey, SCRAPE_DEFAULTS.llmApiKey),
     translateModel: textOf(src.translateModel, SCRAPE_DEFAULTS.translateModel),
     translateModelFallback: textOf(src.translateModelFallback, SCRAPE_DEFAULTS.translateModelFallback),
     trailerMode: pick(src.trailerMode, TRAILERS, SCRAPE_DEFAULTS.trailerMode),
@@ -237,6 +248,9 @@ export function toScrapeSettings(raw: unknown): ScrapeSettings {
 export const SCRAPE_KEYS: (keyof ScrapeSettings)[] = [
   'scrapeMode',
   'plotJavtxt',
+  'translateEnabled',
+  'llmBaseUrl',
+  'llmApiKey',
   'translateModel',
   'translateModelFallback',
   'trailerMode',
