@@ -100,7 +100,7 @@ async function loadVersion(force = false): Promise<void> {
   versionLoading.value = true
   versionError.value = ''
   try {
-    versionInfo.value = await getJson(`/javdb/version${force ? '?force=1' : ''}`)
+    versionInfo.value = await getJson(`plugin/javdb/version${force ? '?force=1' : ''}`)
   } catch (error) {
     versionError.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -113,7 +113,7 @@ async function upgrade(): Promise<void> {
   if (!target) return
   upgrading.value = true
   try {
-    const payload = await postJson('/javdb/upgrade', { version: target })
+    const payload = await postJson('plugin/javdb/upgrade', { version: target })
     if (payload?.success) {
       t.success(String(payload.message || `已升级到 ${target}`))
     } else {
@@ -159,7 +159,7 @@ async function login(): Promise<void> {
   }
   loggingIn.value = true
   try {
-    const payload = await postJson('/javdb/login', { username, password })
+    const payload = await postJson('plugin/javdb/login', { username, password })
     if (payload?.success) {
       t.success(String(payload.message || '登录成功'))
       // 账密落 rule 草稿（点顶条「保存修改」后进 kv，token 过期时可一键重登）

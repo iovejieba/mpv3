@@ -107,7 +107,7 @@ async function loadStatus(): Promise<void> {
   statusLoading.value = true
   statusError.value = ''
   try {
-    const payload = await getJson('/ltx/status')
+    const payload = await getJson('plugin/ltx/status')
     status.value = payload?.status || null
     last.value = payload?.last || null
     cryptoReady.value = payload?.cryptoReady !== false
@@ -121,7 +121,7 @@ async function loadStatus(): Promise<void> {
 async function refreshNow(): Promise<void> {
   refreshing.value = true
   try {
-    const payload = await postJson('/ltx/refresh', {})
+    const payload = await postJson('plugin/ltx/refresh', {})
     status.value = payload?.status || status.value
     last.value = payload?.result || null
     if (payload?.success) {

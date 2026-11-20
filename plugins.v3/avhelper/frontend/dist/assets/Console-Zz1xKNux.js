@@ -948,7 +948,7 @@ const _sfc_main$y = /* @__PURE__ */ _defineComponent$y({
       versionLoading.value = true;
       versionError.value = "";
       try {
-        versionInfo.value = await getJson(`/javdb/version${force ? "?force=1" : ""}`);
+        versionInfo.value = await getJson(`plugin/javdb/version${force ? "?force=1" : ""}`);
       } catch (error) {
         versionError.value = error instanceof Error ? error.message : String(error);
       } finally {
@@ -960,7 +960,7 @@ const _sfc_main$y = /* @__PURE__ */ _defineComponent$y({
       if (!target) return;
       upgrading.value = true;
       try {
-        const payload = await postJson("/javdb/upgrade", { version: target });
+        const payload = await postJson("plugin/javdb/upgrade", { version: target });
         if (payload?.success) {
           t.success(String(payload.message || `已升级到 ${target}`));
         } else {
@@ -997,7 +997,7 @@ const _sfc_main$y = /* @__PURE__ */ _defineComponent$y({
       }
       loggingIn.value = true;
       try {
-        const payload = await postJson("/javdb/login", { username, password });
+        const payload = await postJson("plugin/javdb/login", { username, password });
         if (payload?.success) {
           t.success(String(payload.message || "登录成功"));
           patchRule("javdbUser", username);
@@ -1226,7 +1226,7 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-const GeneralPanel = /* @__PURE__ */ _export_sfc(_sfc_main$y, [["__scopeId", "data-v-2644192d"]]);
+const GeneralPanel = /* @__PURE__ */ _export_sfc(_sfc_main$y, [["__scopeId", "data-v-04e5ca68"]]);
 
 const {defineComponent:_defineComponent$x} = await importShared('vue');
 
@@ -2142,7 +2142,7 @@ const _sfc_main$v = /* @__PURE__ */ _defineComponent$v({
       statusLoading.value = true;
       statusError.value = "";
       try {
-        const payload = await getJson("/ltx/status");
+        const payload = await getJson("plugin/ltx/status");
         status.value = payload?.status || null;
         last.value = payload?.last || null;
         cryptoReady.value = payload?.cryptoReady !== false;
@@ -2155,7 +2155,7 @@ const _sfc_main$v = /* @__PURE__ */ _defineComponent$v({
     async function refreshNow() {
       refreshing.value = true;
       try {
-        const payload = await postJson("/ltx/refresh", {});
+        const payload = await postJson("plugin/ltx/refresh", {});
         status.value = payload?.status || status.value;
         last.value = payload?.result || null;
         if (payload?.success) {
