@@ -22,9 +22,6 @@ export const SETTINGS_SECTIONS: SectionItem[] = [
   { key: 'general', title: '常规', icon: 'mdi-cog-outline' },
   { key: 'sites', title: '搜索站点', icon: 'mdi-web' },
   { key: 'rule', title: '下载规则', icon: 'mdi-filter-cog' },
-  // 「LTX 库」（2026-11-20 新源）：破解资源本地库的开关 / FlareSolverr / 重爬节奏 + 状态。
-  // 字段与「下载规则」同住 rule 草稿（ltx* 键），紧跟其后 —— 都是下载链路的配置。
-  { key: 'ltx', title: 'LTX 库', icon: 'mdi-movie-open-play-outline' },
   { key: 'scrape', title: '刮削', icon: 'mdi-auto-fix' },
   { key: 'scrapeRule', title: '刮削规则', icon: 'mdi-file-document-edit-outline' },
   // 「演员」（0.9.0 演员线 S5 加）：头像源开关 / gFriends 索引 / 自动同步 / 一键补齐。
@@ -52,8 +49,6 @@ export const DIRTY_GROUPS: Record<string, 'none' | 'rule' | 'host' | 'both'> = {
   general: 'host',
   sites: 'rule',
   rule: 'rule',
-  // 「LTX 库」的字段（ltx* 键）与「下载规则」同住 rule 草稿 —— 脏标记同源。
-  ltx: 'rule',
   scrape: 'none',
   scrapeRule: 'none',
   actor: 'none',

@@ -188,56 +188,6 @@ def candidate_from_magnet(magnet: Dict[str, Any], pref_sites: Optional[List[str]
     }
 
 
-_MAGNET_BTIH_RE = re.compile(r"magnet:\?xt=urn:btih:([0-9a-zA-Z]{32,40})")
-
-
-def candidate_from_ltx(item: Dict[str, Any], pref_sites: Optional[List[str]] = None) -> Dict[str, Any]:
-    """LTX 库本地条目 → BT 兜底候选（2026-11-20 新源，ltxstore.lookup 的输出直接喂进来）。
-
-    与 javdb 磁力候选的差异（candidate_from_magnet）：
-    - **LTX 库条目本身就是破解版** → `uncensored` 站点背书为 True，不等标题正则；
-    - 链接是完整磁力 URI（`item.link`），原样进 `_enclosure`（下载时优先用它，
-      比 hash 重拼磁力多保留 tracker/显示名）；`hash` 另行解析供进度/台账对账；
-    - `size` 字段单位未知（bundle 排序键有 size，实测后再定），认不出字节就留 "—"；
-    - 标题/副标题正则兜底 cnsub 判定，与其它源同口径。
-    """
-    title = str(item.get("title") or "")
-    subtitle = str(item.get("subtitle") or "")
-    link = str(item.get("link") or "").strip()
-    res = detect_resolution(title) or detect_resolution(subtitle) or "1080p"
-    match = _MAGNET_BTIH_RE.search(link)
-    try:
-        size_raw = float(item.get("size") or 0)
-    except (TypeError, ValueError):
-        size_raw = 0.0
-    spec = f"{res} / {detect_codec(title) or 'H264'} / 无码破解"
-    return {
-        "src": "BT",
-        "site": "LTX 库",
-        "spec": spec,
-        "cnsub": detect_cnsub(title) or detect_cnsub(subtitle),
-        # 站点背书：LTX 库只收破解/无码版
-        "uncensored": True,
-        "size": human_size(size_raw) if size_raw > 0 else "—",
-        # 做种数 LTX 库没有（分布式网盘资源），按未知处理走 1080p 之外的加分通道
-        "seeders": 0,
-        "free": True,
-        "res": res,
-        "pref": bool(pref_sites) and "LTX 库" in (pref_sites or []),
-        "group": "LTX",
-        "title": title or (str(item.get("code") or "") or "LTX 条目"),
-        "sub": subtitle or str(item.get("title_zh") or ""),
-        "pubdate": str(item.get("date") or item.get("added") or ""),
-        "url": str(item.get("url") or ""),
-        "_enclosure": link,
-        "hash": match.group(1) if match else "",
-        "score": 0,
-        "pass": True,
-        "breakdown": "",
-        "picked": False,
-    }
-
-
 # ---------- 破解关键字词表（FEAT-20261120-01，2026-11-20 定稿） ----------
 
 def clean_keywords(value: Any) -> List[str]:

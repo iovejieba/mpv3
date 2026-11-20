@@ -31,7 +31,6 @@ import {
 import GeneralPanel from './settings/GeneralPanel.vue'
 import SitesPanel from './settings/SitesPanel.vue'
 import RulePanel from './settings/RulePanel.vue'
-import LtxPanel from './settings/LtxPanel.vue'
 import ScrapePanel from './settings/ScrapePanel.vue'
 import ActorPanel from './settings/ActorPanel.vue'
 import ScrapeRulePanel from './settings/ScrapeRulePanel.vue'
@@ -1371,13 +1370,6 @@ onBeforeUnmount(() => {
               @patch="patchRule"
             />
 
-            <LtxPanel
-              v-else-if="settingsSection === 'ltx' && ruleView"
-              :rule="ruleView"
-              :api="currentApi()"
-              :toast="injectedToast"
-              @patch="patchRule"
-            />
 
             <ScrapePanel
               v-else-if="settingsSection === 'scrape'"

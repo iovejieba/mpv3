@@ -34,15 +34,6 @@ export interface RuleState {
   /** ---- JavDB 登录（2026-11-20：面板账密代登，明文存 rule kv，界面 password 框）---- */
   javdbUser?: string
   javdbPass?: string
-  /** ---- LTX 库（2026-11-20 新源；ltx* 键与「下载规则」同住 rule kv，后端 `ltx_conf()` 读）---- */
-  /** 总开关，缺键 = 开（`ltx_conf()` 回落 true）。 */
-  ltxEnabled?: boolean
-  /** 库地址；空 = 官方 ltxlib.dpdns.org。 */
-  ltxSite?: string
-  /** FlareSolverr 地址；空 = 直连。 */
-  ltxFlare?: string
-  /** 重爬间隔天数：1（每天）| 2（隔天）。 */
-  ltxRefreshDays?: number
 }
 
 /** 站点条目（`/bootstrap` 的 `sites`，来自后端 `SiteSearcher.describe()`）。 */
@@ -136,12 +127,6 @@ export const RULE_FALLBACK: RuleState = {
   // JavDB 登录账密（面板代登用；明文与 Emby token 同级，界面 password 框 + 注明）
   javdbUser: '',
   javdbPass: '',
-  // LTX 库（2026-11-20）：sameRule 按**这份的键集合**做脏比较，漏了 ltx* 键
-  // 就永远不算脏 —— 与 toRuleState 的回落值一字不差。
-  ltxEnabled: true,
-  ltxSite: '',
-  ltxFlare: '',
-  ltxRefreshDays: 1,
 }
 
 export function str(value: unknown, fallback = ''): string {
@@ -218,13 +203,6 @@ export function toRuleState(raw: unknown): RuleState {
     savePath: str(src.savePath, RULE_FALLBACK.savePath),
     category: str(src.category, RULE_FALLBACK.category),
     downloader: str(src.downloader, RULE_FALLBACK.downloader),
-    // LTX 库（2026-11-20）：不在这里透传的话，用户存的 ltxSite/ltxFlare 会被这份
-    // 白名单投影吃掉 —— 界面回显成默认值、下次保存还把空值写回去（真 bug）。
-    // 与后端 `ltx_conf()` 的回落口径一字不差。
-    ltxEnabled: bool(src.ltxEnabled, true),
-    ltxSite: str(src.ltxSite, ''),
-    ltxFlare: str(src.ltxFlare, ''),
-    ltxRefreshDays: num(src.ltxRefreshDays, 1, true, 1) === 2 ? 2 : 1,
     // 破解关键字词表：与后端 `scoring.clean_keywords()` 同口径（去空白去重）；
     // 未给键回落空数组 = 旧行为。
     crackKeywords: Array.isArray(src.crackKeywords)

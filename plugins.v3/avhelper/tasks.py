@@ -26,7 +26,6 @@ from app.sdk.logging import logger
 from app.sdk.network import SitesHelper
 
 from . import emby
-from . import ltxstore
 from . import scoring
 from .ratelimit import (POLICY_MAX_PER_DAY, POLICY_MIN_INTERVAL_MIN, is_antibot_error)
 from .sitesearch import SiteSearcher
@@ -552,18 +551,6 @@ class TaskEngine:
             notes.append("没有可搜索的站点：请先在 MoviePilot 里配置站点，或在订阅规则里勾选站点")
 
         if not any(c.get("pass") for c in cands) and rule.get("btFallback"):
-            # LTX 库本地磁力（2026-11-20 新源）：全量快照已在本地，按番号查**零 API**；
-            # 条目本身就是破解版（uncensored 站点背书）， crackKeywords 词表命中直接吃 +24。
-            # 放在 javdb 兜底之前注入：打分排序自己会分高下，两个池子互不挤占。
-            ltx_data = self.plugin.ltx_snapshot()
-            if ltx_data:
-                ltx_items = ltxstore.lookup(keyword, ltx_data)
-                if ltx_items:
-                    for item in ltx_items[:5]:
-                        cand = scoring.candidate_from_ltx(item, pref_names)
-                        scoring.score_candidate(cand, rule)
-                        cands.append(cand)
-                    notes.append(f"LTX 库本地注入 {len(ltx_items[:5])} 条磁力")
             # 兜底磁力优先读详情页已写好的 7 天文件缓存（详情与兜底用同一个 key），
             # 未命中才起子进程；抓取失败/无磁力都要写明，不能静默吞掉。
             magnets = self.plugin.magnets_cached(number=keyword)

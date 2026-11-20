@@ -31,8 +31,6 @@ from app.sdk.plugin import _PluginBase
 from app.sdk.scheduler import add_plugin_once_job, remove_plugin_once_job
 
 from . import emby, imgproxy, longshot, paths, scoring
-# LTX 库接入（2026-11-20）：加密 API 客户端 + 本地快照库 + FlareSolverr 过盾（可选）
-from . import flaresolverr, ltxlib, ltxstore
 from .client import JavdbClient, mask, reset as reset_javdb_state
 # `notify` 模块本身也要在作用域里（`pick_channels()` / `pick_kinds()` 用它当**唯一真值**查表：
 # `notify.CHANNELS` / `notify.PUSH_KINDS`）。只 import 那几个常量不够 —— 常量与表会各自漂。
@@ -504,13 +502,14 @@ class AVHelper(_PluginBase):
     plugin_desc = "JAV 榜单/演员/详情浏览，番号与演员订阅，PT 选种下载与 Telegram 通知"
     plugin_icon = ("https://raw.githubusercontent.com/ssmengyan/"
                    "MoviePilot-Plugins-AV/main/icons/avhelper.png")
-    # 版本：0.9.6-beta.1 = ① javdb-cli 0.8.4（服务端收紧认证后的止血，CASE-20261120-01）
+    # 版本：0.9.6-beta.2 = ① javdb-cli 0.8.4（服务端收紧认证后的止血，CASE-20261120-01）
     # + 二进制版本策略（下限自动 / 上限提示手动，用户点了才升）② 破解关键字词表
-    # （FEAT-20261120-01，命中 +24 / 词表空 = 旧行为 / 硬门槛默认关）③ LTX 库全量本地化
-    # （FEAT-20261120-02，每日重爬零 API，BT 兜底注入磁力）。真机验证清单见
-    # docs/cases/2026-11-20-release-0.9.6-beta.md —— 验证完摘掉 -beta 后缀转正。
+    # （FEAT-20261120-01，命中 +24 / 词表空 = 旧行为 / 硬门槛默认关）。
+    # ③ LTX 库（FEAT-20261120-02）已在 beta.2 **整体下线**（CASE-20261120-02：站点
+    # Turnstile 指纹评估拒绝一切自动化环境，四家工具实测无解）——ltxlib/ltxstore/
+    # flaresolverr 模块、路由、定时任务、面板均已摘除；kv 里的 ltx* 键留存无害。
     # 0.9.5 = 恢复能力与部署（下载完成即刮的待办落库续跑 / 图片缓存即时失效 / 部署脚本化）
-    plugin_version = "0.9.6-beta.1"
+    plugin_version = "0.9.6-beta.2"
     plugin_label = "发现"
     plugin_author = "ssmengyan"
     plugin_config_prefix = "avhelper_"
@@ -635,44 +634,7 @@ class AVHelper(_PluginBase):
             logger.warning(f"AVHelper 演员表回填失败（下轮启动会再试）：{error}")
         self.start_javdb_bootstrap()
         self.start_warm_up()
-        self.start_ltx_bootstrap()
 
-    def start_ltx_bootstrap(self) -> None:
-        """LTX 库启动收尾（守护线程，不阻塞宿主）：清扫僵尸 FlareSolverr session +
-        快照为空/过期时补一轮重爬。
-
-        **清扫是硬需求**（2026-11-20 用户点名）：FlareSolverr 的命名 session 在它进程里
-        养着一只常驻浏览器，进程崩溃留下的僵尸会一直吃内存。清扫只认 `avhelper-` 前缀
-        （`flaresolverr.SESSION_PREFIX`），不碰用户其它工具的 session。快照缺失或超过
-        重爬间隔时也补爬一轮——首次安装/刚开功能不用等到凌晨 5 点。
-        """
-        conf = self.ltx_conf()
-        if not conf["ltxEnabled"]:
-            return
-
-        def _bootstrap() -> None:
-            try:
-                data = ltxstore.load()
-                stale = (not data
-                         or time.time() - float(data.get("fetchedAt") or 0)
-                         > conf["ltxRefreshDays"] * 86400)
-                if conf["ltxFlare"]:
-                    # 只做清扫，不抓页面；FlareSolverr 不可达时 sweep 内部吞掉返回 0
-                    swept = flaresolverr.FlareSolverr(
-                        conf["ltxFlare"], timeout=10).sweep()
-                    if swept:
-                        logger.info(f"AVHelper LTX：清扫 FlareSolverr 遗留 session {swept} 个")
-                if stale:
-                    self._ltx_refresh()
-                else:
-                    summary = ltxstore.stats(data)
-                    logger.info(f"AVHelper LTX 快照可用：{summary['total']} 条"
-                                f"（磁力 {summary['magnet']}），下轮由定时任务重爬")
-            except Exception as error:                            # noqa: BLE001
-                logger.warning(f"AVHelper LTX 启动收尾失败（不影响其它功能）：{error}")
-
-        threading.Thread(target=_bootstrap, name="avhelper-ltx",
-                         daemon=True).start()
 
     #: 认领下载后多久还算「正在提交」（秒）：超过它说明进程死在中间（0.9.2 A1）。
     SUBMITTING_STALE_SECONDS = 600
@@ -781,13 +743,6 @@ class AVHelper(_PluginBase):
              # 会把它当字符串 `"[5, 20, 35, 50]"` 解析并抛 `Unrecognized expression "[5"` ——
              # 整条服务注册失败、演员同步静默停摆（容器里实测，见 `schedule.py` 文件头）。
              "kwargs": {"minute": "5,20,35,50"}, "func": self.job_actor_sync},
-            {"id": "ltxrefresh", "name": "AV LTX 库重爬", "trigger": "cron",
-             # 每天/隔天 5:13（`ltxRefreshDays`：1 → 每天，2 → 隔天），与缓存清理（4:00）错开；
-             # 改间隔要 reload 插件才会换时间表（与 notifyCron 同一约定）。标量 int 是合法
-             # cron 字段值（只有**列表**会炸，见上条注释），这里没有列表。
-             "kwargs": {"hour": 5, "minute": 13,
-                        "day": "*" if self.ltx_conf()["ltxRefreshDays"] <= 1 else "*/2"},
-             "func": self.job_ltx_refresh},
         ]
 
     def get_media_source(self) -> Optional[List[Dict[str, Any]]]:
@@ -1033,12 +988,6 @@ class AVHelper(_PluginBase):
             {"path": "/javdb/login", "endpoint": self.api_javdb_login, "methods": ["POST"],
              "auth": "bear", "summary": "JavDB 账密代登",
              "description": "POST {username?, password?} → 代跑 auth login（缺参用已存账密）"},
-            {"path": "/ltx/status", "endpoint": self.api_ltx_status, "methods": ["GET"],
-             "auth": "bear", "summary": "LTX 库状态",
-             "description": "本地快照统计 + 最近一次重爬结论 + 当前设置（不含密钥）"},
-            {"path": "/ltx/refresh", "endpoint": self.api_ltx_refresh, "methods": ["POST"],
-             "auth": "bear", "summary": "LTX 库立即重爬",
-             "description": "POST {} → 后台线程跑 _ltx_refresh()，同步返回结论"},
             {"path": "/tasks", "endpoint": self.api_tasks, "methods": ["GET"], "auth": "bear",
              "summary": "任务与下载队列"},
             {"path": "/tasks/search", "endpoint": self.api_task_search, "methods": ["POST"],
@@ -1409,116 +1358,6 @@ class AVHelper(_PluginBase):
                 "message": (f"已交给 MoviePilot 推送（{name}）" if ok
                             else f"提交给宿主时出错（{name}），请检查宿主日志")}
 
-    # ---------- LTX 库（2026-11-20）：全量本地快照 + 每日重爬 ----------
-
-    #: LTX 快照的进程内缓存（tasks BT 兜底按番号查链接用，避免每次查都读 5MB JSON）
-    _ltx_cache: Optional[Dict[str, Any]] = None
-    #: 最近一次重爬的结论（状态接口透出：时间/新增数/原因），不落盘——重启后等下一轮
-    _ltx_last: Dict[str, Any] = {}
-
-    def ltx_conf(self) -> Dict[str, Any]:
-        """LTX 库设置（存 `global_rule` kv，与 scrape/notify 同一套；`POST /rule` 写入）。
-
-        键名（前端 `LtxPanel` 按这套读写）：`ltxEnabled`（总开关，默认开）/
-        `ltxSite`（库地址，默认官方）/ `ltxFlare`（FlareSolverr 地址，留空 = 直连）/
-        `ltxRefreshDays`（重爬间隔天数，1 或 2）。缺键逐项回落默认 —— 老规则里没有这些键不报错。
-        """
-        rule = self.global_rule() or {}
-        site = str(rule.get("ltxSite") or "").strip() or ltxlib.DEFAULT_SITE
-        flare = str(rule.get("ltxFlare") or "").strip()
-        if flare and not flare.startswith(("http://", "https://")):
-            flare = ""                      # 地址形状不对 = 没配，别拿去打请求
-        try:
-            days = int(rule.get("ltxRefreshDays") or 1)
-        except (TypeError, ValueError):
-            days = 1
-        return {
-            "ltxEnabled": pick_bool(rule.get("ltxEnabled"), True),
-            "ltxSite": site,
-            "ltxFlare": flare,
-            "ltxRefreshDays": 2 if days >= 2 else 1,
-        }
-
-    def ltx_snapshot(self) -> Optional[Dict[str, Any]]:
-        """本地 LTX 快照（tasks BT 兜底的按番号查链接入口）。
-
-        进程内缓存一份：BT 兜底每次搜索都会查，读 5MB JSON 不能每次都来；
-        快照只在 `_ltx_refresh()` 成功后替换，任务侧看到的永远是一份完整数据。
-        """
-        if self._ltx_cache is None:
-            self._ltx_cache = ltxstore.load()
-        return self._ltx_cache
-
-    def _ltx_client(self) -> ltxlib.LtxClient:
-        conf = self.ltx_conf()
-        client = ltxlib.LtxClient(conf["ltxSite"], timeout=60)
-        return client
-
-    def _ltx_refresh(self) -> Dict[str, Any]:
-        """重爬一次全量目录并落本地快照；返回给界面/日志看的结论。
-
-        流程：直连加密 API → 拿全量目录 → 与旧快照 diff（新增/下架/新增带链接数）→
-        原子落盘 + 换内存缓存。失败**如实**记原因（闭枚举 kind），绝不吞成未知错误；
-        `verify`（源站 Turnstile 人机闸）与 `cf`（CF 边缘拦截）区别对待：前者任何自动
-        流程都过不了，后者先试 FlareSolverr 过盾收割 cookies 再重试一次。
-        """
-        conf = self.ltx_conf()
-        result: Dict[str, Any] = {"ok": False, "site": conf["ltxSite"]}
-        data: Optional[Dict[str, Any]] = None
-        try:
-            client = self._ltx_client()
-            try:
-                catalogue = client.catalogue()
-            except ltxlib.LtxError as error:
-                if error.kind in ("cf", "verify") and conf["ltxFlare"]:
-                    # CF 边缘拦截 / 源站人机闸：FlareSolverr 临时浏览器过盾收割 cookies
-                    # （solve() 用完即弃，没有常驻浏览器）。FlareSolverr 的真浏览器上下文
-                    # 能过 Turnstile——SPA 在页面里完成验证后种下的 cookie 连同同一 UA
-                    # 带回直连请求，同出口 IP 下有机会直接放行（2026-11-20 实测路径）。
-                    flare = flaresolverr.FlareSolverr(conf["ltxFlare"])
-                    solved = flare.solve(conf["ltxSite"] + "/")
-                    client.ingest_cookies(solved["cookies"], solved["userAgent"])
-                    logger.info(f"AVHelper LTX：FlareSolverr 过盾完成（HTTP {solved['status']}，"
-                                f"cookies {len(solved['cookies'])} 个），重试直连")
-                    catalogue = client.catalogue()
-                else:
-                    raise
-            if not isinstance(catalogue, dict) or not isinstance(catalogue.get("items"), list):
-                raise ltxlib.LtxError("parse", "目录响应缺 items 数组（协议可能已升级）")
-            data = {"snapshot": str(catalogue.get("snapshot") or ""),
-                    "items": catalogue.get("items") or [],
-                    "fetchedAt": time.time()}
-            old = ltxstore.load()
-            ltxstore.save(data)
-            self._ltx_cache = data
-            delta = ltxstore.diff(old, data)
-            summary = ltxstore.stats(data)
-            result.update({"ok": True, "delta": delta, "stats": summary})
-            logger.info(f"AVHelper LTX 快照已更新：共 {summary['total']} 条"
-                        f"（磁力 {summary['magnet']} / ed2k {summary['ed2k']} / "
-                        f"待确认 {summary['pending']}），较上轮新增 {len(delta['added'])}"
-                        f"（带链接 {delta['added_with_link']}）、下架 {len(delta['removed'])}")
-        except ltxlib.LtxError as error:
-            result["reason"] = error.kind
-            result["message"] = str(error)
-            result["sitekey"] = error.sitekey
-            logger.warning(f"AVHelper LTX 重爬失败（{error.kind}）：{error}")
-        except Exception as error:                                # noqa: BLE001
-            result["reason"] = "unexpected"
-            result["message"] = f"{type(error).__name__}: {error}"
-            logger.warning(f"AVHelper LTX 重爬异常：{result['message']}")
-        self._ltx_last = {**result, "at": time.strftime("%Y-%m-%d %H:%M:%S")}
-        return result
-
-    def job_ltx_refresh(self) -> None:
-        """定时重爬（get_service 注册，cron 每天/隔天一次）。
-
-        `ltxEnabled` 关着就静默返回（与演员同步的门禁同一模式，注册表常驻不白跑）。
-        """
-        if not self.ltx_conf()["ltxEnabled"]:
-            return
-        self._ltx_refresh()
-
     # ---------- javdb-cli 版本（检测更新 → 用户决定，绝不静默换版） ----------
 
     #: 上游 latest 的进程内缓存（{version, at}）；TTL 6h，界面「重新检测」可强制刷新
@@ -1598,7 +1437,7 @@ class AVHelper(_PluginBase):
         try:
             raw, message = self.cli().auth_check()
             ok = raw is not None
-        except Exception as error:                                        # noqa: BLE001
+        except Exception as error:                        # noqa: BLE001
             ok, message = False, f"{type(error).__name__}: {error}"
         status: Dict[str, Any] = {"ok": ok, "message": message}
         if isinstance(raw, dict):
@@ -1612,8 +1451,7 @@ class AVHelper(_PluginBase):
         """面板账密代登：POST {username?, password?} → 代跑 `javdb auth login`。
 
         账密给了就**先落 kv 再登录**（token 过期后面板可一键重登）；没给就用已存
-        的。这是 0.9.6-beta.1 把最后一条手工命令（docker exec auth login）收进
-        面板的收尾——客户全程零命令行。登录**不走失败冷却**（用户行为，当场反馈）。
+        的。登录**不走失败冷却**（用户行为，当场反馈）。
         """
         payload = await self._json_body(request)
         username = str(payload.get("username") or "").strip()
@@ -3107,28 +2945,6 @@ class AVHelper(_PluginBase):
             return {"success": True, "rule": self.global_rule(), "message": message,
                     "ignored": ignored}
         return {"success": True, "rule": self.global_rule()}
-
-    async def api_ltx_status(self, request: Request) -> Dict[str, Any]:
-        """LTX 库状态：本地快照统计 + 最近一次重爬结论 + 当前设置。
-
-        `verify` 的 sitekey 原样透出（前端弹「需要浏览器人机验证」的提示时引用）；
-        快照统计由 `ltxstore.status_summary()` 给，没数据就是空态不编造。
-        """
-        status = await asyncio.to_thread(ltxstore.status_summary)
-        conf = self.ltx_conf()
-        return {"success": True, "status": status, "conf": conf,
-                "last": self._ltx_last,
-                "cryptoReady": ltxlib.HAVE_CRYPTO}
-
-    async def api_ltx_refresh(self, request: Request) -> Dict[str, Any]:
-        """LTX 库立即重爬（设置台「立即重爬」按钮）。
-
-        网络抓取 10~30 秒级，照 `/scrape/selfcheck` 的口径丢工作线程
-        （`asyncio.to_thread`），不卡宿主事件循环。
-        """
-        result = await asyncio.to_thread(self._ltx_refresh)
-        return {"success": bool(result.get("ok")), "result": result,
-                "status": await asyncio.to_thread(ltxstore.status_summary)}
 
     async def api_task_search(self, request: Request) -> Dict[str, Any]:
         """按番号/关键词搜索站点并打分（真实站点搜索，受 §8.2 限流约束）。

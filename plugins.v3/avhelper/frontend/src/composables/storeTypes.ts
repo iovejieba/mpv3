@@ -106,14 +106,6 @@ export interface RuleValue {
   /** ---- JavDB 登录账密（面板代登）---- */
   javdbUser?: string
   javdbPass?: string
-  /** ---- LTX 库（2026-11-20 新源；与后端 `ltx_conf()` 同键名，都住在 global_rule kv）---- */
-  ltxEnabled?: boolean
-  /** 库地址；留空 = 官方 ltxlib.dpdns.org。 */
-  ltxSite?: string
-  /** FlareSolverr 地址（过 CF 盾收 cookies 用）；留空 = 直连。 */
-  ltxFlare?: string
-  /** 重爬间隔天数：1（每天，默认）或 2（隔天）。 */
-  ltxRefreshDays?: number
 }
 
 /** 候选种（`scoring.candidate_from_torrent` / `candidate_from_magnet`）。 */
@@ -271,11 +263,6 @@ export const RULE_FALLBACK: RuleValue = {
   // JavDB 登录账密默认
   javdbUser: '',
   javdbPass: '',
-  // LTX 库默认（与后端 `ltx_conf()` 回落值同口径；sameRule 按这份的键集合做脏比较）
-  ltxEnabled: true,
-  ltxSite: '',
-  ltxFlare: '',
-  ltxRefreshDays: 1,
 }
 
 /**
