@@ -100,16 +100,28 @@ def candidate_from_torrent(torrent: Any, pref_sites: Optional[List[str]] = None)
     title = str(_get(torrent, "title"))
     description = str(_get(torrent, "description"))
     site = str(_get(torrent, "site_name"))
-    # 规格探测回落链：hint → 标题 → 描述（ExoticaZ 等站点标题不带规格、全在描述文本里）
+    # 站点结构化标签（MP 索引器的 `labels`，如 ExoticaZ 的「1080p HD」）：站点自己打的
+    # 规格标签，比自由文本标题/描述更可信。list/str 两种形状都接。
+    labels_raw = _get(torrent, "labels")
+    if isinstance(labels_raw, (list, tuple)):
+        label_text = " ".join(str(x) for x in labels_raw if x)
+    else:
+        label_text = str(labels_raw or "")
+    # 规格探测回落链：hint → 站点标签 → 标题 → 描述（ExoticaZ 等站点标题不带规格，
+    # 规格在站点标签与描述文本里）
     res = (str(_get(torrent, "res_hint", ""))
+           or detect_resolution(label_text)
            or detect_resolution(title)
            or detect_resolution(description))
     codec = (str(_get(torrent, "codec_hint", ""))
+             or detect_codec(label_text)
              or detect_codec(title)
              or detect_codec(description)
              or "—")
-    cnsub = bool(_get(torrent, "cnsub_hint", False)) or detect_cnsub(title) or detect_cnsub(description)
+    cnsub = (bool(_get(torrent, "cnsub_hint", False)) or detect_cnsub(label_text)
+             or detect_cnsub(title) or detect_cnsub(description))
     uncensored = (bool(_get(torrent, "uncensored_hint", False))
+                  or detect_uncensored(label_text)
                   or detect_uncensored(title) or detect_uncensored(description))
     try:
         seeders = int(_get(torrent, "seeders", 0) or 0)
