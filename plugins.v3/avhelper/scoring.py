@@ -11,9 +11,11 @@ from typing import Any, Dict, List, Optional
 # 注意：chs/gb 必须加词边界——裸 `gb` 会命中 `GBR`（英国区码），把普通种子误判成有中字。
 _CNSUB_RE = re.compile(r"中字|中文|简体|\bchs\b|\bgb\b", re.IGNORECASE)
 _UNCENSORED_RE = re.compile(r"无码|破解|uncensored|leak|流出", re.IGNORECASE)
-_RES_2160_RE = re.compile(r"2160p|4k|uhd", re.IGNORECASE)
-_RES_1080_RE = re.compile(r"1080p|fhd", re.IGNORECASE)
-_RES_720_RE = re.compile(r"720p", re.IGNORECASE)
+# 像素分辨率格式（`1920x1080` / `3840x2160`，兼容 × 与 , 千位分隔）——
+# ExoticaZ 等站点的规格写在描述里且用像素格式，标题正则必须能识别（2026-11-20）。
+_RES_2160_RE = re.compile(r"2160p|4k|uhd|3840[×x,]\s?2160|4096[×x,]\s?2160", re.IGNORECASE)
+_RES_1080_RE = re.compile(r"1080[pi]|fhd|1920[×x,]\s?1080", re.IGNORECASE)
+_RES_720_RE = re.compile(r"720p|1280[×x,]\s?720", re.IGNORECASE)
 _H265_RE = re.compile(r"h\.?265|x265|hevc", re.IGNORECASE)
 _H264_RE = re.compile(r"h\.?264|x264|avc", re.IGNORECASE)
 _GROUP_RE = re.compile(r"-\[?([A-Za-z0-9@._-]{2,20})\]?\s*$")
@@ -98,8 +100,14 @@ def candidate_from_torrent(torrent: Any, pref_sites: Optional[List[str]] = None)
     title = str(_get(torrent, "title"))
     description = str(_get(torrent, "description"))
     site = str(_get(torrent, "site_name"))
-    res = str(_get(torrent, "res_hint", "")) or detect_resolution(title)
-    codec = str(_get(torrent, "codec_hint", "")) or detect_codec(title) or "—"
+    # 规格探测回落链：hint → 标题 → 描述（ExoticaZ 等站点标题不带规格、全在描述文本里）
+    res = (str(_get(torrent, "res_hint", ""))
+           or detect_resolution(title)
+           or detect_resolution(description))
+    codec = (str(_get(torrent, "codec_hint", ""))
+             or detect_codec(title)
+             or detect_codec(description)
+             or "—")
     cnsub = bool(_get(torrent, "cnsub_hint", False)) or detect_cnsub(title) or detect_cnsub(description)
     uncensored = (bool(_get(torrent, "uncensored_hint", False))
                   or detect_uncensored(title) or detect_uncensored(description))
@@ -117,6 +125,10 @@ def candidate_from_torrent(torrent: Any, pref_sites: Optional[List[str]] = None)
         "src": "PT",
         "site": site,
         "spec": spec,
+        # res/codec 单独透出（2026-11-20）：score_candidate 的分辨率策略档读它——
+        # 此前只有拼好的 spec 字符串，策略档永远拿不到值，非馒头站点恒按「未知 +5」计分
+        "res": res,
+        "codec": codec,
         "cnsub": cnsub,
         "uncensored": uncensored,
         "size": human_size(_get(torrent, "size", 0)),
